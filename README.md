@@ -176,7 +176,7 @@ It also accepts `{"rows": [...]}` or `{"csv": "..."}` for several at once.
 3. Deploy, open the site, and create your admin account. Your browser's timezone is saved as the workspace timezone (change it under *Settings › Email & automation*).
 4. Add your team and clients under *Settings › People & access* (see above).
 
-If a site is already connected, open **Deploys → Trigger deploy → Clear cache and deploy site** after pulling changes. If something doesn't load, check **Logs → Functions → api**.
+If a site is already connected, open **Deploys → Deploy project without cache** after pulling changes. If something doesn't load, check **Logs → Functions → api**.
 
 ## Deploying elsewhere
 
