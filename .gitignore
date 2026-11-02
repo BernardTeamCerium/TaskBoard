@@ -3,3 +3,6 @@ data/
 .env
 *.db
 *.db-*
+netlify/dist/
+netlify/.local-test.mjs
+netlify/.etag-test.mjs

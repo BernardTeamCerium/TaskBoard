@@ -205,3 +205,39 @@ test('monthly report: completed this month, planned next month, client version h
   assert.equal((await owner.post('/api/reports/save', { month })).status, 200);
   assert.equal((await owner.get('/api/reports/saved')).data.length, 1);
 });
+
+test('invites: admin adds someone without a password, they set their own via a one-time link', async () => {
+  const r = await owner.post('/api/users', { name: 'Christine', email: 'christine@example.com', role: 'member', business_ids: [] });
+  assert.equal(r.status, 200);
+  assert.ok(r.data.invite_token);
+  assert.equal(r.data.password, undefined);
+  const users = (await owner.get('/api/users')).data;
+  assert.equal(users.find((u) => u.email === 'christine@example.com').pending, true);
+
+  const christine = client();
+  assert.equal((await christine.post('/api/login', { email: 'christine@example.com', password: `invite$${r.data.invite_token}` })).status, 401);
+  assert.equal((await christine.get(`/api/invite/${r.data.invite_token}`)).data.email, 'christine@example.com');
+  assert.equal((await christine.post(`/api/invite/${r.data.invite_token}`, { password: 'short' })).status, 400);
+  assert.equal((await christine.post(`/api/invite/${r.data.invite_token}`, { password: 'christine123' })).status, 200);
+  assert.equal((await christine.get('/api/me')).data.name, 'Christine');
+  assert.equal((await christine.post(`/api/invite/${r.data.invite_token}`, { password: 'again12345' })).status, 404);
+
+  // reset link: new link replaces the password; old sessions are signed out
+  const reset = (await owner.post(`/api/users/${r.data.id}/invite`, {})).data.invite_token;
+  assert.equal((await client().post(`/api/invite/${reset}`, { password: 'newpass1234' })).status, 200);
+  assert.equal((await christine.get('/api/me')).status, 401);
+  assert.equal((await client().post('/api/login', { email: 'christine@example.com', password: 'newpass1234' })).status, 200);
+
+  // only admins can create links
+  assert.equal((await christine.post(`/api/users/${r.data.id}/invite`, {})).status, 403);
+});
+
+test('timezone setting is validated and used for deadlines', async () => {
+  assert.equal((await owner.patch('/api/settings', { timezone: 'Mars/Olympus' })).status, 400);
+  assert.equal((await owner.patch('/api/settings', { timezone: 'America/Los_Angeles' })).status, 200);
+  const r = await owner.post('/api/command', { text: `AEF: TZ check due:2026-12-01` });
+  const id = Number(r.data.results[0].task.split('-')[1]);
+  const t = (await owner.get(`/api/tasks/${id}`)).data;
+  assert.equal(t.due_at, '2026-12-02T01:00:00.000Z'); // 5pm Pacific
+  await owner.patch('/api/settings', { timezone: 'UTC' });
+});

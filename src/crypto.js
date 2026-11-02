@@ -1,4 +1,4 @@
-// Password hashing and tokens (Node). The in-browser demo swaps this file for demo/browser-crypto.js.
+// Password hashing and session/API tokens.
 import crypto from 'node:crypto';
 
 export function hashPassword(password) {

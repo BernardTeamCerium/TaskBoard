@@ -3,11 +3,11 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { SCHEMA, SqlJsDatabase } from './db-core.js';
 
-export { DEFAULT_COLUMNS, tx, getSetting, setSetting, SCHEMA } from './db-core.js';
+export { DEFAULT_COLUMNS, tx, getSetting, setSetting, SCHEMA, validTimezone, applyTimezone } from './db-core.js';
 
 // Prefer Node's built-in SQLite (file-backed). Fall back to sql.js (WebAssembly,
-// in-memory) where node:sqlite isn't available or DB_DRIVER=sqljs — e.g. the
-// Netlify demo, where functions have no persistent disk anyway.
+// in-memory) where node:sqlite isn't available or DB_DRIVER=sqljs. (The Netlify
+// build swaps this file for netlify/runtime/db-netlify.js.)
 let NodeDatabaseSync = null;
 if (process.env.DB_DRIVER !== 'sqljs') {
   try { ({ DatabaseSync: NodeDatabaseSync } = await import('node:sqlite')); } catch { /* fall back */ }

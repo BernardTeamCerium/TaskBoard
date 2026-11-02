@@ -276,5 +276,3 @@ pre { background: var(--panel-2); padding: 10px 12px; border-radius: 8px; overfl
   .panel, .stat { break-inside: avoid; box-shadow: none; }
 }
 
-.demo-bar { background: var(--soon-soft); color: var(--soon); font-size: 12.5px; padding: 6px 20px; border-bottom: 1px solid var(--border); }
-@media print { .demo-bar { display: none; } }

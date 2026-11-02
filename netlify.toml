@@ -1,18 +1,15 @@
-# Netlify demo: a static site only — no server or functions.
-# The TaskBoard API runs inside the visitor's browser (demo/entry.js) and saves
-# to that browser's localStorage. netlify-demo/ is pre-built and committed, so
-# Netlify has nothing to build. After changing the app, run `npm run build:demo`
-# and commit netlify-demo/.
+# TaskBoard on Netlify
+#  - public/ is the website
+#  - netlify/functions/api.mjs serves every /api/* request
+#  - netlify/functions/scheduled.mjs sends reminders/digests/monthly reports every 15 min
+#  - all data is stored in Netlify Blobs (store "taskboard"), with a daily backup copy
 [build]
-  publish = "netlify-demo"
-  command = ""
+  publish = "public"
+  command = "npm run build:netlify"
 
-[[headers]]
-  for = "/*.wasm"
-  [headers.values]
-    Content-Type = "application/wasm"
+[build.environment]
+  NODE_VERSION = "22"
 
-[[headers]]
-  for = "/*"
-  [headers.values]
-    Cache-Control = "public, max-age=0, must-revalidate"
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"

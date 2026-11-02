@@ -1,4 +1,4 @@
-// Driver-independent database pieces shared by the Node server and the in-browser demo.
+// Driver-independent database pieces: schema and helpers.
 
 export const SCHEMA = `
 PRAGMA foreign_keys = ON;
@@ -122,6 +122,14 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read);
 
+-- one-time "set your password" links for invited people
+CREATE TABLE IF NOT EXISTS invites (
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS api_tokens (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
@@ -172,7 +180,7 @@ export class SqlJsDatabase {
   /** @param SQL initialised sql.js module; @param bytes optional saved database */
   constructor(SQL, bytes) { this.db = bytes ? new SQL.Database(bytes) : new SQL.Database(); }
   exec(sql) { this.db.exec(sql); }
-  /** Serialise the whole database (used by the browser demo to persist to localStorage). */
+  /** Serialise the whole database to bytes. */
   export() { const bytes = this.db.export(); this.db.exec('PRAGMA foreign_keys = ON'); return bytes; }
   prepare(sql) {
     const db = this.db;
@@ -228,4 +236,15 @@ export function getSetting(db, key, fallback = null) {
 export function setSetting(db, key, value) {
   db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
     .run(key, JSON.stringify(value));
+}
+
+export function validTimezone(tz) {
+  if (!tz || typeof tz !== 'string') return false;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; }
+}
+
+/** Point Node's local time at the workspace timezone (Netlify/Lambda servers run on UTC). */
+export function applyTimezone(db) {
+  const tz = getSetting(db, 'timezone', null);
+  if (validTimezone(tz) && process.env.TZ !== tz) process.env.TZ = tz;
 }

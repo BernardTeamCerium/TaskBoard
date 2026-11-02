@@ -1,7 +1,7 @@
 // Notifications: in-app bell + optional email (SMTP) + optional chat/push webhook,
 // plus a scheduler that sends deadline reminders and a daily digest.
 import nodemailer from 'nodemailer';
-import { getSetting, setSetting } from './db.js';
+import { getSetting, setSetting, applyTimezone } from './db.js';
 
 let transport = null;
 let transportChecked = false;
@@ -15,7 +15,7 @@ function mailer() {
 }
 
 export const emailConfigured = () => !!mailer();
-const appUrl = () => (process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/$/, '');
+const appUrl = () => (process.env.APP_URL || process.env.URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/$/, '');
 
 export async function sendEmail({ to, subject, text, html }) {
   const t = mailer();
@@ -154,6 +154,7 @@ export async function runDailyDigest(db, now = new Date()) {
 
 export function startScheduler(db, { intervalMs = 5 * 60e3, extraJobs = [] } = {}) {
   const tick = () => {
+    applyTimezone(db);
     try { runReminders(db); } catch (err) { console.error('[scheduler] reminders:', err); }
     runDailyDigest(db).catch((err) => console.error('[scheduler] digest:', err));
     for (const job of extraJobs) Promise.resolve().then(() => job(db)).catch((err) => console.error('[scheduler]', err));

@@ -142,7 +142,7 @@ export async function runMonthlyReport(db, now = new Date()) {
   saveReport(db, buildMonthlyReport(db, owner, { month: key }));
   if (!emailConfigured()) return 0;
 
-  const appUrl = (process.env.APP_URL || '').replace(/\/$/, '');
+  const appUrl = (process.env.APP_URL || process.env.URL || '').replace(/\/$/, '');
   let sent = 0;
   for (const u of db.prepare("SELECT * FROM users WHERE role IN ('owner','member') AND email_notifications = 1").all()) {
     const rep = buildMonthlyReport(db, u, { month: key });

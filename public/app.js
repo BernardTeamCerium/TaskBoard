@@ -102,12 +102,16 @@ window.addEventListener('load', route);
 
 async function route() {
   const app = $('#app');
+  const invite = (location.hash || '').match(/^#\/invite\/([\w-]+)/);
+  if (invite) return renderInvite(app, invite[1]);
   if (!state.boot) {
     try {
-      const { needsSetup, demo } = await (await fetch('/api/setup')).json();
+      const setupRes = await fetch('/api/setup');
+      if (!setupRes.ok) throw new Error(`The server returned an error (${setupRes.status}). If you just deployed, check the Netlify function log.`);
+      const { needsSetup } = await setupRes.json();
       if (needsSetup) return renderSetup(app);
       const me = await fetch('/api/me');
-      if (me.status === 401) return renderLogin(app, demo);
+      if (me.status === 401) return renderLogin(app);
       await loadBoot();
     } catch (err) {
       app.replaceChildren(h('div', { class: 'auth' }, h('div', { class: 'card' }, h('h1', {}, 'Can’t reach the server'), h('p', { class: 'muted' }, err.message))));
@@ -147,7 +151,7 @@ function renderMain(hash) {
 }
 
 // ---------- auth screens ----------
-function renderLogin(app, demo = false) {
+function renderLogin(app) {
   const err = h('div', { class: 'error' });
   const form = h('form', {
     onsubmit: async (e) => {
@@ -164,18 +168,63 @@ function renderLogin(app, demo = false) {
   h('label', { class: 'field' }, h('span', {}, 'Password'), h('input', { type: 'password', name: 'password', required: true, autocomplete: 'current-password' })),
   err,
   h('button', { class: 'btn primary', style: { width: '100%', justifyContent: 'center' } }, 'Sign in'));
-  const demoLogin = (email) => {
-    form.querySelector('[name=email]').value = email;
-    form.querySelector('[name=password]').value = 'changeme123';
-    form.requestSubmit();
-  };
   app.replaceChildren(h('div', { class: 'auth' }, h('div', { class: 'card' },
     h('h1', {}, 'TaskBoard'), h('p', { class: 'muted' }, 'Sign in to your workspace'), form,
-    demo ? h('div', { style: { marginTop: '18px' } },
-      h('div', { class: 'small muted', style: { marginBottom: '8px' } }, 'Demo — try it as:'),
-      h('div', { style: { display: 'grid', gap: '6px' } },
-        [['bernard@example.com', 'Bernard (owner)'], ['pete@example.com', 'Pete (team)'], ['christine@example.com', 'Christine (team)'], ['client@example.com', 'A client (limited view)']]
-          .map(([email, label]) => h('button', { type: 'button', class: 'btn', onclick: () => demoLogin(email) }, label)))) : null)));
+    h('p', { class: 'small muted', style: { marginTop: '14px', marginBottom: 0 } }, 'Forgot your password? Ask your admin to send you a new sign-in link.'))));
+}
+
+async function renderInvite(app, token) {
+  const card = h('div', { class: 'card' }, h('h1', {}, 'TaskBoard'), h('p', { class: 'muted' }, 'Checking your link…'));
+  app.replaceChildren(h('div', { class: 'auth' }, card));
+  let who;
+  try { who = await api('GET', `/api/invite/${token}`); } catch (err) {
+    card.replaceChildren(h('h1', {}, 'Link not valid'), h('p', { class: 'muted' }, err.message),
+      h('a', { class: 'btn', href: '#/', onclick: () => { location.hash = ''; route(); } }, 'Go to sign in'));
+    return;
+  }
+  const err = h('div', { class: 'error' });
+  const pw = h('input', { type: 'password', required: true, minlength: 8, autocomplete: 'new-password', autofocus: true });
+  const pw2 = h('input', { type: 'password', required: true, minlength: 8, autocomplete: 'new-password' });
+  const form = h('form', {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      if (pw.value !== pw2.value) { err.textContent = 'The passwords don’t match'; return; }
+      try {
+        await api('POST', `/api/invite/${token}`, { password: pw.value });
+        history.replaceState(null, '', '#/');
+        await loadBoot();
+        route();
+      } catch (e2) { err.textContent = e2.message; }
+    },
+  },
+  h('label', { class: 'field' }, h('span', {}, 'Email (your sign-in)'), h('input', { type: 'email', value: who.email, disabled: true, autocomplete: 'username' })),
+  h('label', { class: 'field' }, h('span', {}, 'Choose a password (8+ characters)'), pw),
+  h('label', { class: 'field' }, h('span', {}, 'Type it again'), pw2),
+  err,
+  h('button', { class: 'btn primary', style: { width: '100%', justifyContent: 'center' } }, 'Set password and sign in'));
+  card.replaceChildren(h('h1', {}, `Welcome, ${who.name.split(' ')[0]}`), h('p', { class: 'muted' }, 'Set a password to finish setting up your TaskBoard account.'), form);
+}
+
+const inviteUrl = (token) => `${location.origin}/#/invite/${token}`;
+
+/** Show a sign-in link to copy (and optionally email) to someone. */
+function showInviteLink(person, token) {
+  const url = inviteUrl(token);
+  const input = h('input', { type: 'text', value: url, readonly: true, onclick: (e) => e.target.select() });
+  modal(`Sign-in link for ${person.name}`, h('div', {},
+    h('p', {}, `Send this link to ${person.name} (${person.email}). It lets them choose their own password and works once, for 7 days.`),
+    h('div', { class: 'row' }, input,
+      h('button', { class: 'btn primary', onclick: async () => { try { await navigator.clipboard.writeText(url); toast('Link copied'); } catch { input.select(); document.execCommand('copy'); toast('Link copied'); } } }, 'Copy')),
+    state.boot.features.email ? h('div', { style: { marginTop: '12px' } }, h('button', {
+      class: 'btn',
+      onclick: async () => {
+        try {
+          const r = await api('POST', `/api/users/${person.id}/invite`, { send: true, link: inviteUrl('{token}') });
+          if (r.emailed) { closeModal(); toast(`Emailed a sign-in link to ${person.email}`); }
+        } catch (err) { fail(err); }
+      },
+    }, '✉ Email it to them instead')) : h('p', { class: 'small muted', style: { marginTop: '10px' } }, 'Tip: set up email (SMTP_URL) and TaskBoard can send this for you.')),
+  [h('button', { class: 'btn', onclick: closeModal }, 'Done')]);
 }
 
 function renderSetup(app) {
@@ -185,7 +234,7 @@ function renderSetup(app) {
       e.preventDefault();
       const f = Object.fromEntries(new FormData(form));
       try {
-        await api('POST', '/api/setup', f);
+        await api('POST', '/api/setup', { ...f, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
         await loadBoot();
         location.hash = '#/';
         route();
@@ -231,7 +280,7 @@ function renderShell() {
     ),
     h('div', { class: 'me' },
       h('span', { class: 'avatar lg' }, initials(b.me.name)),
-      h('div', { class: 'grow' }, h('div', {}, b.me.name), h('div', { class: 'muted small' }, b.me.role === 'client' ? 'Client' : b.me.role === 'owner' ? 'Owner' : 'Team')),
+      h('div', { class: 'grow' }, h('div', {}, b.me.name), h('div', { class: 'muted small' }, b.me.role === 'client' ? 'Client' : b.me.role === 'owner' ? 'Admin' : 'Team')),
       h('button', { class: 'btn ghost sm', onclick: async () => { await api('POST', '/api/logout', {}); state.boot = null; location.hash = ''; route(); } }, 'Sign out')),
   );
 
@@ -244,12 +293,7 @@ function renderShell() {
     isStaff() ? commandBar() : h('div', { class: 'grow' }),
     isStaff() ? h('button', { class: 'btn primary', onclick: () => newTaskModal() }, '+ Task') : null,
   );
-  const demoBar = b.features.demo ? h('div', { class: 'demo-bar' },
-    window.taskboardDemoReset
-      ? 'Demo site — runs entirely in your browser; your changes are saved on this device only. Don’t enter real client information. '
-      : 'Demo site — sample data that resets periodically. Don’t enter real client information here. ',
-    window.taskboardDemoReset ? h('button', { class: 'btn ghost sm', onclick: () => { if (confirm('Reset the demo back to the sample data?')) window.taskboardDemoReset(); } }, 'Reset demo data') : null) : null;
-  app.replaceChildren(h('div', { class: 'shell' }, sidebar, h('div', { class: 'main' }, demoBar, topbar, h('main', { class: 'content' }))));
+  app.replaceChildren(h('div', { class: 'shell' }, sidebar, h('div', { class: 'main' }, topbar, h('main', { class: 'content' }))));
 }
 
 function highlightNav(hash) {
@@ -1030,25 +1074,33 @@ async function settingsPeople(area) {
   const draw = () => area.replaceChildren(
     h('div', { class: 'row', style: { marginBottom: '12px' } },
       h('button', { class: 'btn primary', onclick: () => userModal() }, '+ Add person'),
-      h('span', { class: 'muted small' }, 'Owners see everything. Team members see the businesses you give them. Clients only see tabs you share and tasks marked visible.')),
+      h('span', { class: 'muted small' }, 'Admins see everything. Team members see only the businesses you tick. Clients see only the tabs you share and, inside them, only tasks marked “Visible to client”.')),
     h('div', { class: 'panel' }, h('table', { class: 't' },
       h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Role'), h('th', {}, 'Access'), h('th', {}, '')),
       users.map((u) => h('tr', {},
         h('td', {}, h('div', {}, u.name), h('div', { class: 'muted small' }, u.email)),
-        h('td', {}, { owner: 'Owner', member: 'Team', client: 'Client' }[u.role]),
+        h('td', {}, { owner: 'Admin', member: 'Team', client: 'Client' }[u.role], u.pending ? h('div', {}, h('span', { class: 'chip soon' }, 'invite pending')) : null),
         h('td', { class: 'small' }, u.role === 'owner' ? 'Everything'
           : u.role === 'member' ? (u.business_ids.map((id) => businessById(id)?.name).filter(Boolean).join(', ') || h('span', { class: 'muted' }, 'No businesses'))
             : (u.project_ids.map((id) => { const p = projectById(id); return p ? `${businessById(p.business_id)?.name} › ${p.name}${p.client_visible ? '' : ' (tab hidden)'}` : null; }).filter(Boolean).join(', ') || h('span', { class: 'muted' }, 'Nothing shared'))),
         h('td', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
           h('button', { class: 'btn sm', onclick: () => userModal(u) }, 'Edit'),
+          h('button', {
+            class: 'btn sm',
+            title: u.pending ? 'Get a new invite link' : 'Get a link that lets them set a new password',
+            onclick: async () => {
+              if (!u.pending && !confirm(`Create a new sign-in link for ${u.name}? They'll use it to choose a new password.`)) return;
+              try { showInviteLink(u, (await api('POST', `/api/users/${u.id}/invite`, {})).invite_token); } catch (err) { fail(err); }
+            },
+          }, u.pending ? 'Invite link' : 'Reset link'),
           u.id !== b.me.id ? h('button', { class: 'btn sm danger', onclick: async () => { if (confirm(`Remove ${u.name}?`)) { await api('DELETE', `/api/users/${u.id}`).catch(fail); refreshAll(); } } }, 'Remove') : null))))));
 
   function userModal(u = null) {
     const f = {
       name: h('input', { type: 'text', value: u?.name || '' }),
       email: h('input', { type: 'email', value: u?.email || '' }),
-      role: h('select', {}, [['client', 'Client'], ['member', 'Team member'], ['owner', 'Owner']].map(([v, l]) => h('option', { value: v, selected: (u?.role || 'client') === v }, l))),
-      password: h('input', { type: 'text', placeholder: u ? 'Leave blank to keep' : 'Leave blank to generate one' }),
+      role: h('select', {}, [['client', 'Client — sees only what you share'], ['member', 'Team member — sees the businesses you pick'], ['owner', 'Admin — sees and controls everything']].map(([v, l]) => h('option', { value: v, selected: (u?.role || 'client') === v }, l))),
+      password: h('input', { type: 'text', placeholder: u ? 'Leave blank to keep' : 'Leave blank to send an invite link' }),
     };
     const bizChecks = b.businesses.map((x) => h('label', {}, h('input', { type: 'checkbox', value: x.id, checked: u?.business_ids.includes(x.id) }), x.name));
     const projChecks = b.projects.filter((p) => !p.archived).map((p) => h('label', { title: p.client_visible ? '' : 'This tab is internal — enable client access on the tab too' },
@@ -1073,8 +1125,8 @@ async function settingsPeople(area) {
           try {
             const r = u ? await api('PATCH', `/api/users/${u.id}`, body) : await api('POST', '/api/users', body);
             closeModal();
-            if (r.password) alert(`Account created.\n\nEmail: ${body.email}\nTemporary password: ${r.password}\n\nShare these with ${body.name}; they can change the password under Profile.`);
             await refreshAll();
+            if (r.invite_token) showInviteLink({ id: r.id, name: body.name, email: body.email }, r.invite_token);
           } catch (err) { fail(err); }
         },
       }, 'Save')]);
@@ -1158,6 +1210,11 @@ async function settingsAutomation(area) {
         h('button', { class: 'btn primary', onclick: () => runTry(false) }, 'Run for real')),
       tryOut),
 
+    h('div', { class: 'panel' }, h('h2', {}, 'Timezone'),
+      h('p', { class: 'muted small' }, 'Used for deadlines sent by email or message (“due Friday” means 5pm here), reminders, the morning digest and monthly reports.'),
+      h('select', { onchange: set('timezone'), style: { maxWidth: '360px' } },
+        [...new Set([settings.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone, ...(Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : [])])]
+          .filter(Boolean).map((tz) => h('option', { value: tz, selected: tz === settings.timezone }, tz.replace(/_/g, ' '))))),
     h('div', { class: 'panel' }, h('h2', {}, 'Automation settings'),
       h('label', { class: 'field' }, h('span', {}, 'Inbox tab — where messages without a [KEY] go'),
         h('select', { onchange: set('inbox_project_id') }, h('option', { value: '' }, 'None (reject them)'),

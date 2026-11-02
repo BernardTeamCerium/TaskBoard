@@ -24,16 +24,8 @@ Requires Node.js 22.13 or newer. There's nothing native to compile, because it u
 
 ```bash
 npm install
-npm start            # http://localhost:3000 — first visit asks you to create the owner account
+npm start            # http://localhost:3000 — first visit asks you to create the admin account
 ```
-
-To try it with demo data that mirrors the current Trello board:
-
-```bash
-npm run seed         # then sign in as bernard@example.com / changeme123
-```
-
-The seed also creates `pete@example.com` and `christine@example.com` (team), and `client@example.com` (a client who only sees the shared AEF tabs).
 
 Run the tests with `npm test`.
 
@@ -41,11 +33,22 @@ Run the tests with `npm test`.
 
 | Role | Sees | Can do |
 |---|---|---|
-| **Owner** | Everything | Everything, including people, tokens, settings and import |
+| **Admin** | Everything | Everything, including people, tokens, settings and import |
 | **Team member** | Businesses they're added to (all tabs, all tasks, internal notes) | Create, edit and move tasks, comment |
 | **Client** | Only tabs that are **shared with them** *and* marked client-visible, and within those only tasks marked **Visible to client** | Read, and post comments (never internal) |
 
 All of these rules are enforced on the server (`src/permissions.js`), not just hidden in the UI.
+
+### Adding people
+
+1. *Settings › People & access → Add person.*
+2. Enter their name and email and choose **Team member** or **Client**:
+   - for a team member, tick the businesses they work on;
+   - for a client, tick the tabs they may open (the tab must also have *Clients can open this tab* switched on).
+3. Leave the password blank. TaskBoard shows a **sign-in link** to copy and send them (or email it for you if email is set up). The link works once, for 7 days, and lets them choose their own password. Until they use it, the person shows as *invite pending* and can't sign in.
+4. Forgotten password? Click **Reset link** next to their name and send them the new link.
+
+No passwords are stored in the code or shown to you.
 
 ## Updating the board from email and messages
 
@@ -121,33 +124,29 @@ Open **Monthly reports** in the sidebar and pick a month.
 - On the 1st of each month (at the digest hour) a snapshot of last month is saved under *Saved reports* and emailed to owners and team members. Snapshots keep the record even if tasks are later edited or deleted.
 - Done columns on boards only show the last 30 days, so boards stay tidy; older completed work is still in Reports.
 
-## Netlify demo
+## Running on Netlify
 
-The repo includes a demo that Netlify can host as a **plain static site, with no server**. The real TaskBoard API (`src/server.js`) is bundled to run inside the visitor's browser (`demo/`), on a WebAssembly copy of SQLite.
+`netlify.toml` sets everything up:
 
-- It starts with the sample data and has one-click demo logins.
-- Changes are saved in **that browser only** (localStorage). Other people don't see them, and *Reset demo data* in the banner starts over.
-- Email, reminders by email, inbound webhooks and AI features are off in the demo.
+- `public/` is the website.
+- `netlify/functions/api.mjs` serves every `/api/*` request. It runs the same server code, bundled by `npm run build:netlify` during Netlify's build.
+- The database is stored in **Netlify Blobs** (store `taskboard`). Each save is conditional, so two requests at the same moment can't overwrite each other, and a dated backup copy is kept each day under `backups/`.
+- `netlify/functions/scheduled.mjs` runs every 15 minutes for deadline reminders, the morning digest and the monthly report.
 
-To set it up:
+### First-time setup
 
-1. In Netlify choose **Add new site → Import an existing project → GitHub** and pick this repository and branch.
-2. Leave the build settings empty. `netlify.toml` publishes the pre-built `netlify-demo/` folder.
-3. Deploy.
+1. In Netlify: **Add new site → Import an existing project → GitHub**, pick this repository and branch. The build settings come from `netlify.toml`, so leave them as they are.
+2. Before the first deploy (or right after), add these under **Site configuration → Environment variables**:
+   - `ADMIN_EMAIL` — your email. Only this address can create the admin account on the first-run screen, so nobody else can claim it.
+   - Optional: `SMTP_URL` and `MAIL_FROM` for email notifications and invite emails, `NOTIFY_WEBHOOK_URL`, `ANTHROPIC_API_KEY` (see `.env.example`).
+3. Deploy, open the site, and create your admin account. Your browser's timezone is saved as the workspace timezone (change it under *Settings › Email & automation*).
+4. Add your team and clients under *Settings › People & access* (see above).
 
-If a site is already connected, open **Deploys → Trigger deploy → Clear cache and deploy site** after pulling these changes.
+If a site is already connected, open **Deploys → Trigger deploy → Clear cache and deploy site** after pulling changes. If something doesn't load, check **Logs → Functions → api**.
 
-After changing the app, rebuild the demo and commit the result:
+## Deploying elsewhere
 
-```bash
-npm run build:demo
-```
-
-For real, shared use (your whole team and clients seeing the same data), run the server on a host with a disk. See below.
-
-## Deploying
-
-The app is a single Node process with one SQLite file. Any host that keeps a persistent disk works, for example Render, Railway or Fly.io (with a volume), a $5 VPS, or Docker:
+Outside Netlify, the app is a single Node process with one SQLite file. Any host that keeps a persistent disk works, for example Render, Railway or Fly.io (with a volume), a $5 VPS, or Docker:
 
 ```bash
 docker build -t taskboard .
@@ -169,7 +168,7 @@ src/inbound.js      inbound email/message handling
 src/notify.js       in-app/email/webhook notifications, reminders, digest
 src/trello.js       Trello JSON import
 src/reports.js      monthly reports
+src/db-core.js      database schema and helpers (src/db.js picks the driver)
 public/             front end (no build step)
-demo/               browser build of the API for the static Netlify demo
-netlify-demo/       pre-built static demo (generated by npm run build:demo)
+netlify/            Netlify Functions, Blobs-backed runtime and its build script
 ```

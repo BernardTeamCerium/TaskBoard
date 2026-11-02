@@ -2,7 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openDb, tx, getSetting, setSetting } from './db.js';
+import { openDb, tx, getSetting, setSetting, validTimezone, applyTimezone } from './db.js';
 import {
   hashPassword, verifyPassword, createSession, destroySession, userFromSession, userFromApiToken,
   parseCookies, SESSION_COOKIE, randomToken, sha256, loginThrottled, recordLoginFailure, clearLoginFailures,
@@ -13,7 +13,7 @@ import {
 } from './permissions.js';
 import { createTask, updateTask, addComment, deleteTask, getTask, getProject, projectColumns, HttpError } from './tasks.js';
 import { handleInbound, summarize } from './inbound.js';
-import { startScheduler, emailConfigured, runReminders } from './notify.js';
+import { startScheduler, emailConfigured, runReminders, sendEmail } from './notify.js';
 import { aiAvailable } from './ai.js';
 import { importTrello } from './trello.js';
 import { buildMonthlyReport, reportText, saveReport, runMonthlyReport } from './reports.js';
@@ -29,6 +29,9 @@ export function createApp(db) {
   app.use(express.json({ limit: '25mb' }));
   app.use(express.urlencoded({ extended: false, limit: '5mb' }));
   app.use(express.static(path.join(here, '..', 'public'), { index: 'index.html' }));
+
+  // Deadlines like "Friday" and the digest/report hours use the workspace timezone.
+  app.use((_req, _res, next) => { applyTimezone(db); next(); });
 
   // ---------- auth helpers ----------
   app.use((req, _res, next) => {
@@ -49,21 +52,25 @@ export function createApp(db) {
   const setCookie = (res, token, maxAge) => {
     res.cookie(SESSION_COOKIE, token, {
       httpOnly: true, sameSite: 'lax', maxAge, path: '/',
-      secure: process.env.APP_URL?.startsWith('https://') ?? false,
+      secure: (process.env.APP_URL || process.env.URL || '').startsWith('https://'),
     });
   };
 
   // ---------- setup & login ----------
   app.get('/api/setup', (_req, res) => {
-    res.json({ needsSetup: !db.prepare('SELECT 1 FROM users LIMIT 1').get(), demo: process.env.DEMO_MODE === '1' });
+    res.json({ needsSetup: !db.prepare('SELECT 1 FROM users LIMIT 1').get() });
   });
 
   app.post('/api/setup', (req, res) => {
     if (db.prepare('SELECT 1 FROM users LIMIT 1').get()) throw new HttpError(400, 'Already set up');
-    const { name, email, password, business } = req.body;
+    const { name, email, password, business, timezone } = req.body;
     if (!name || !email || !password || password.length < 8) throw new HttpError(400, 'Name, email and a password of 8+ characters are required');
+    // Optional lock: only this address may create the admin account.
+    const adminEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+    if (adminEmail && String(email).trim().toLowerCase() !== adminEmail) throw new HttpError(403, 'Only the configured admin email can set up this workspace');
     const user = tx(db, () => {
       const r = db.prepare("INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, 'owner')").run(name, email, hashPassword(password));
+      if (validTimezone(timezone)) setSetting(db, 'timezone', timezone);
       if (business) createBusinessWithProject(db, business);
       return { id: Number(r.lastInsertRowid) };
     });
@@ -126,7 +133,7 @@ export function createApp(db) {
       projects,
       people,
       unread,
-      features: { email: emailConfigured(), ai: aiAvailable(), demo: process.env.DEMO_MODE === '1' },
+      features: { email: emailConfigured(), ai: aiAvailable() },
     });
   });
 
@@ -338,6 +345,7 @@ export function createApp(db) {
     for (const u of users) {
       u.business_ids = db.prepare('SELECT business_id FROM business_members WHERE user_id = ?').all(u.id).map((r) => r.business_id);
       u.project_ids = db.prepare('SELECT project_id FROM project_clients WHERE user_id = ?').all(u.id).map((r) => r.project_id);
+      u.pending = String(db.prepare('SELECT password_hash FROM users WHERE id = ?').get(u.id).password_hash).startsWith('invite$');
     }
     res.json(users);
   });
@@ -345,13 +353,52 @@ export function createApp(db) {
   app.post('/api/users', requireOwner, (req, res) => {
     const { name, email, password, role } = req.body;
     if (!name || !email || !['owner', 'member', 'client'].includes(role)) throw new HttpError(400, 'Name, email and role are required');
-    const pw = password || randomToken(9);
-    if (pw.length < 8) throw new HttpError(400, 'Password must be 8+ characters');
+    if (password && password.length < 8) throw new HttpError(400, 'Password must be 8+ characters');
     if (db.prepare('SELECT 1 FROM users WHERE email = ? COLLATE NOCASE').get(email)) throw new HttpError(400, 'That email already has an account');
-    const r = db.prepare('INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)').run(name, email, hashPassword(pw), role);
+    // Without a password the account can't be signed into until the invite link is used.
+    const r = db.prepare('INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)')
+      .run(name, email, password ? hashPassword(password) : `invite$${randomToken(24)}`, role);
     const id = Number(r.lastInsertRowid);
     setAccess(db, id, req.body);
-    res.json({ id, password: password ? undefined : pw });
+    res.json({ id, invite_token: password ? undefined : createInvite(db, id) });
+  });
+
+  // New "set your password" link for someone (also how you reset a forgotten password).
+  app.post('/api/users/:id/invite', requireOwner, async (req, res) => {
+    const u = db.prepare('SELECT id, name, email FROM users WHERE id = ?').get(req.params.id);
+    if (!u) throw new HttpError(404, 'User not found');
+    const token = createInvite(db, u.id);
+    let emailed = false;
+    if (req.body.send && emailConfigured() && req.body.link) {
+      await sendEmail({
+        to: u.email,
+        subject: `${req.user.name} invited you to TaskBoard`,
+        text: `Hi ${u.name.split(' ')[0]},\n\n${req.user.name} has given you access to TaskBoard.\n\nSet your password here (link works for 7 days):\n${String(req.body.link).replace('{token}', token)}\n`,
+      });
+      emailed = true;
+    }
+    res.json({ invite_token: token, emailed });
+  });
+
+  app.get('/api/invite/:token', (req, res) => {
+    const row = inviteFor(db, req.params.token);
+    if (!row) throw new HttpError(404, 'This invite link is invalid or has expired. Ask for a new one.');
+    res.json({ name: row.name, email: row.email });
+  });
+
+  app.post('/api/invite/:token', (req, res) => {
+    const row = inviteFor(db, req.params.token);
+    if (!row) throw new HttpError(404, 'This invite link is invalid or has expired. Ask for a new one.');
+    const password = String(req.body.password || '');
+    if (password.length < 8) throw new HttpError(400, 'Password must be 8+ characters');
+    tx(db, () => {
+      db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), row.user_id);
+      db.prepare('DELETE FROM invites WHERE user_id = ?').run(row.user_id);
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(row.user_id);
+    });
+    const s = createSession(db, row.user_id);
+    setCookie(res, s.token, s.maxAge);
+    res.json({ ok: true });
   });
 
   app.patch('/api/users/:id', requireOwner, (req, res) => {
@@ -397,9 +444,10 @@ export function createApp(db) {
   });
 
   // ---------- settings (owner) ----------
-  const SETTING_KEYS = ['inbox_project_id', 'ai_mode', 'allow_unknown_senders', 'inbound_confirmations', 'reminder_hours', 'digest_hour'];
+  const SETTING_KEYS = ['timezone', 'inbox_project_id', 'ai_mode', 'allow_unknown_senders', 'inbound_confirmations', 'reminder_hours', 'digest_hour'];
   app.get('/api/settings', requireOwner, (_req, res) => {
     res.json({
+      timezone: getSetting(db, 'timezone', null) || process.env.TZ || 'UTC',
       inbox_project_id: getSetting(db, 'inbox_project_id', null),
       ai_mode: getSetting(db, 'ai_mode', 'fallback'),
       allow_unknown_senders: getSetting(db, 'allow_unknown_senders', false),
@@ -407,12 +455,14 @@ export function createApp(db) {
       reminder_hours: getSetting(db, 'reminder_hours', 24),
       digest_hour: getSetting(db, 'digest_hour', 8),
       inbound_email_address: process.env.INBOUND_EMAIL_ADDRESS || null,
-      app_url: process.env.APP_URL || null,
+      app_url: process.env.APP_URL || process.env.URL || null,
     });
   });
 
   app.patch('/api/settings', requireOwner, (req, res) => {
+    if (req.body.timezone !== undefined && !validTimezone(req.body.timezone)) throw new HttpError(400, 'Unknown timezone');
     for (const k of SETTING_KEYS) if (req.body[k] !== undefined) setSetting(db, k, req.body[k]);
+    applyTimezone(db);
     res.json({ ok: true });
   });
 
@@ -486,6 +536,20 @@ export function createApp(db) {
 }
 
 // ---------- helpers ----------
+const INVITE_DAYS = 7;
+function createInvite(db, userId) {
+  const token = randomToken(24);
+  db.prepare('DELETE FROM invites WHERE user_id = ?').run(userId);
+  db.prepare('INSERT INTO invites (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
+    .run(sha256(token), userId, new Date(Date.now() + INVITE_DAYS * 864e5).toISOString());
+  return token;
+}
+
+function inviteFor(db, token) {
+  return db.prepare(`SELECT i.user_id, u.name, u.email FROM invites i JOIN users u ON u.id = i.user_id
+    WHERE i.token_hash = ? AND i.expires_at > ?`).get(sha256(String(token)), new Date().toISOString()) || null;
+}
+
 function escapeXml(s) {
   return String(s).replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]));
 }

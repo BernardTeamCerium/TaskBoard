@@ -1,5 +1,5 @@
 // The small part of Express that src/server.js uses, running on fetch-style
-// Request/Response objects so the real API routes work inside the browser.
+// Request/Response objects so the real API routes run inside a Netlify Function.
 function compile(path) {
   const keys = [];
   const re = new RegExp(`^${path.replace(/\//g, '\\/').replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; })}\\/?$`);
@@ -23,7 +23,7 @@ function express() {
     for (const fn of handlers.flat()) layers.push({ method, path, fn, ...(method === 'USE' ? {} : compile(path)) });
   };
   const app = {
-    disable() {}, set() {}, listen() { throw new Error('listen() is not available in the browser'); },
+    disable() {}, set() {}, listen() { throw new Error('listen() is not available in a Netlify Function'); },
     use(path, ...fns) { if (typeof path === 'function') add('USE', null, [path, ...fns]); else add('USE', path, fns); return app; },
     get: (p, ...f) => (add('GET', p, f), app),
     post: (p, ...f) => (add('POST', p, f), app),
@@ -32,11 +32,11 @@ function express() {
     delete: (p, ...f) => (add('DELETE', p, f), app),
 
     /** Handle one request. Returns { status, headers, body, cookies }. */
-    async handle({ method, url, headers, body }) {
+    async handle({ method, url, headers, body, ip = '0.0.0.0' }) {
       const u = new URL(url, 'http://demo.local');
       const req = {
         method, url: u.pathname + u.search, path: u.pathname,
-        query: Object.fromEntries(u.searchParams), headers, body: body ?? {}, params: {}, ip: '127.0.0.1',
+        query: Object.fromEntries(u.searchParams), headers, body: body ?? {}, params: {}, ip,
         is: (t) => (headers['content-type'] || '').includes(t.replace('application/', '')),
       };
       const res = new Res();
