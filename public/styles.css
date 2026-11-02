@@ -19,6 +19,8 @@
   --internal-soft: #f3edff;
   --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
   --radius: 10px;
+  --chart-1: #4f46e5;
+  --chart-grid: #e8e9ed;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -42,6 +44,8 @@
     --internal: #c4b5fd;
     --internal-soft: #2c2443;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+    --chart-1: #7c7cf2;
+    --chart-grid: #2a2f39;
     color-scheme: dark;
   }
 }
@@ -276,3 +280,30 @@ pre { background: var(--panel-2); padding: 10px 12px; border-radius: 8px; overfl
   .panel, .stat { break-inside: avoid; box-shadow: none; }
 }
 
+
+/* ---------- campaigns ---------- */
+.filters { gap: 8px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 12px; }
+.table-scroll { overflow-x: auto; }
+table.t th.num, table.t td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.camp-table td { vertical-align: middle; }
+.camp-name { font-weight: 600; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: var(--panel-2); }
+tr.total td { font-weight: 700; border-top: 2px solid var(--border); }
+.delta { font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--muted); }
+.delta.good { color: var(--ok); }
+.delta.bad { color: var(--danger); }
+.chart { position: relative; margin: 8px 0 14px; }
+.chart-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+.chart svg { display: block; overflow: visible; }
+.chart .chart-svg { width: 100%; height: auto; max-width: 100%; }
+.chart .bar { fill: var(--chart-1); }
+.chart .grid { stroke: var(--chart-grid); stroke-width: 1; }
+.chart .tick { fill: var(--muted); font-size: 11px; }
+.chart .hit { fill: transparent; cursor: default; }
+.chart .hit:hover { fill: var(--text); fill-opacity: .04; }
+.chart-tip { position: absolute; top: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; box-shadow: var(--shadow); pointer-events: none; min-width: 120px; }
+@media (max-width: 860px) { .grid3 { grid-template-columns: 1fr 1fr; } }
+.rep-biz table.t { table-layout: fixed; min-width: 640px; }
+.rep-biz table.t th:first-child, .rep-biz table.t td:first-child { width: 32%; }

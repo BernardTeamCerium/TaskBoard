@@ -162,6 +162,42 @@ CREATE TABLE IF NOT EXISTS reports (
   UNIQUE (month, scope, client_view)
 );
 
+-- marketing campaigns per business, and their results per period
+CREATE TABLE IF NOT EXISTS campaigns (
+  id INTEGER PRIMARY KEY,
+  business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  channel TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','ended')),
+  target_cpl REAL,
+  monthly_budget REAL,
+  notes TEXT NOT NULL DEFAULT '',
+  -- 0 = internal; 1 = clients with access to this business can see it
+  client_visible INTEGER NOT NULL DEFAULT 0,
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS campaign_results (
+  id INTEGER PRIMARY KEY,
+  campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  period_start TEXT NOT NULL, -- YYYY-MM-DD
+  period_end TEXT NOT NULL,   -- YYYY-MM-DD (inclusive)
+  spend REAL,
+  impressions INTEGER,
+  clicks INTEGER,
+  leads INTEGER,
+  appointments INTEGER,
+  sales INTEGER,
+  revenue REAL,
+  notes TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'web',
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (campaign_id, period_start, period_end)
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_results ON campaign_results(campaign_id, period_start);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

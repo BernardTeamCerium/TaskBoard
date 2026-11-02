@@ -2,6 +2,7 @@
 // scoped by the same visibility rules as everything else, so a client's copy
 // only ever contains client-visible work.
 import { taskScope, isStaff } from './permissions.js';
+import { campaignSummary } from './campaigns.js';
 import { sendEmail, emailConfigured } from './notify.js';
 import { getSetting, setSetting } from './db.js';
 
@@ -84,6 +85,12 @@ export function buildMonthlyReport(db, user, { month, clientView = false, busine
     completed: groupByBusiness(completed),
     planned: groupByBusiness(planned),
     carriedOver: carried,
+    campaigns: campaignSummary(db, user, {
+      from: monthKey(r.start) + '-01',
+      to: new Date(r.start.getFullYear(), r.start.getMonth() + 1, 0).toLocaleDateString('en-CA'),
+      businessId,
+      clientView: !!(clientView || !isStaff(user)),
+    }),
   };
 }
 
@@ -113,6 +120,19 @@ export function reportText(rep) {
     lines.push(`\n${b.name}`);
     for (const p of b.projects) for (const t of p.tasks) {
       lines.push(`  • ${t.title} — due ${fmtDate(t.due_at)}${t.assignee_name && !rep.clientView ? `, ${t.assignee_name}` : ''}`);
+    }
+  }
+  const camp = rep.campaigns;
+  if (camp && camp.businesses.length) {
+    const money = (v) => (v == null ? '—' : `$${v.toLocaleString('en-US', { maximumFractionDigits: 2, minimumFractionDigits: v % 1 ? 2 : 0 })}`);
+    const n = (v) => (v == null ? '—' : v.toLocaleString('en-US'));
+    lines.push('', 'CAMPAIGN PERFORMANCE');
+    for (const b of camp.businesses) {
+      lines.push(`\n${b.name}`);
+      for (const c of b.campaigns) {
+        const t = c.totals;
+        lines.push(`  ${c.name}: spend ${money(t.spend)} · leads ${n(t.leads)} · cost/lead ${money(t.cpl)} · appts ${n(t.appointments)} · sales ${n(t.sales)}${t.roi != null ? ` · ROI ${Math.round(t.roi * 100)}%` : ''}`);
+      }
     }
   }
   if (rep.carriedOver.length) {

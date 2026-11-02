@@ -96,6 +96,11 @@ async function loadBoot() {
   state.boot = await api('GET', '/api/bootstrap');
 }
 
+// Each page render gets a number; if a newer render of the same area starts while
+// this one is waiting on the server, the older one quietly stops (no doubled content).
+const beginRender = (el) => (el._renderGen = (el._renderGen || 0) + 1);
+const isStale = (el, gen) => el._renderGen !== gen;
+
 // ---------- routing ----------
 window.addEventListener('hashchange', route);
 window.addEventListener('load', route);
@@ -145,6 +150,7 @@ function renderMain(hash) {
     return renderEmptyBusiness(content, businessById(parts[1]));
   }
   if (parts[0] === 'reports') return renderReports(content, parts[1]);
+  if (parts[0] === 'campaigns') return renderCampaigns(content);
   if (parts[0] === 'notifications') return renderNotifications(content);
   if (parts[0] === 'settings') return renderSettings(content, parts[1] || (isOwner() ? 'businesses' : 'profile'));
   return renderDashboard(content);
@@ -261,6 +267,7 @@ function renderShell() {
     h('nav', { class: 'nav', onclick: (e) => { if (e.target.closest('a')) $('.sidebar').classList.remove('open'); } },
       h('a', { href: '#/', 'data-nav': '#/' }, h('span', {}, '📅'), 'Deadlines'),
       h('a', { href: '#/reports', 'data-nav': '#/reports' }, h('span', {}, '📊'), 'Monthly reports'),
+      h('a', { href: '#/campaigns', 'data-nav': '#/campaigns' }, h('span', {}, '📈'), 'Campaigns'),
       h('a', { href: '#/notifications', 'data-nav': '#/notifications' }, h('span', {}, '🔔'), 'Notifications',
         b.unread ? h('span', { class: 'badge', id: 'unread-badge' }, b.unread) : h('span', { id: 'unread-badge' })),
       h('div', { class: 'section' }, isStaff() ? 'Businesses' : 'Projects',
@@ -405,6 +412,7 @@ function listRow(task, opts = {}) {
 
 // ---------- dashboard ----------
 async function renderDashboard(content) {
+  const gen = beginRender(content);
   const mine = store.get('dashMine', false);
   const view = store.get('dashView', 'list');
   const head = h('div', { class: 'page-head' },
@@ -415,6 +423,7 @@ async function renderDashboard(content) {
       h('button', { class: view === 'calendar' ? 'active' : '', onclick: () => { store.set('dashView', 'calendar'); renderMain('#/'); } }, 'Calendar')));
   content.append(head);
   const tasks = await api('GET', `/api/tasks?sort=due${mine ? '&assignee=me' : ''}`);
+  if (isStale(content, gen)) return;
 
   if (view === 'calendar') { content.append(calendar(tasks, { showProject: true })); return; }
 
@@ -446,6 +455,7 @@ async function renderDashboard(content) {
 function projectView(p) { return store.get(`view:${p.id}`, 'board'); }
 
 async function renderProject(content, project) {
+  const gen = beginRender(content);
   const biz = businessById(project.business_id);
   const tabs = state.boot.projects.filter((p) => p.business_id === biz.id && (!p.archived || p.id === project.id));
   const view = projectView(project);
@@ -490,6 +500,7 @@ async function renderProject(content, project) {
   const area = h('div');
   content.append(area);
   let tasks = await api('GET', `/api/tasks?project_id=${project.id}${preview ? '&client_view=1' : ''}`);
+  if (isStale(content, gen)) return;
   const draw = () => {
     const q = search.value.trim().toLowerCase();
     store.set(`q:${project.id}`, search.value);
@@ -891,6 +902,7 @@ function prevMonthKey() {
 const appendAll = (el, ...kids) => el.append(...kids.flat(Infinity).filter((k) => k != null && k !== false));
 
 async function renderReports(content, monthParam) {
+  const gen = beginRender(content);
   if (monthParam) store.set('reportMonth', monthParam);
   const month = store.get('reportMonth', prevMonthKey());
   const clientVersion = isStaff() ? store.get('reportClient', false) : true;
@@ -911,6 +923,7 @@ async function renderReports(content, monthParam) {
     h('a', { class: 'btn', href: `/api/reports/monthly.txt?${qs}` }, '⬇ Text')));
 
   const rep = await api('GET', `/api/reports/monthly?${qs}`);
+  if (isStale(content, gen)) return;
   const summaryBox = h('div');
   const person = (t) => (!rep.clientView && t.assignee_name ? h('span', { class: 'chip' }, t.assignee_name) : null);
   const section = (title, groups, row) => h('div', { class: 'panel' }, h('h2', {}, title),
@@ -959,6 +972,15 @@ async function renderReports(content, monthParam) {
       h('span', { class: 'grow' }, t.title),
       person(t),
       h('span', { class: 'muted small' }, `due ${fmtDay(t.due_at)}`))),
+    rep.campaigns && rep.campaigns.businesses.length ? h('div', { class: 'panel' }, h('h2', {}, `📈 Campaign performance — ${rep.label}`),
+      rep.campaigns.businesses.map((b) => h('div', { class: 'rep-biz' },
+        h('h3', { class: 'row' }, h('span', { class: 'biz-dot', style: { background: b.color, width: '10px', height: '10px', borderRadius: '3px', display: 'inline-block' } }), b.name),
+        h('div', { class: 'table-scroll' }, h('table', { class: 't small' },
+          h('tr', {}, ['Campaign', 'Spend', 'Leads', 'Cost / lead', 'Appts', 'Sales', 'ROI', 'Leads vs prev month'].map((x, i) => h('th', { class: i ? 'num' : '' }, x))),
+          b.campaigns.map((c) => h('tr', {},
+            h('td', {}, c.name), h('td', { class: 'num' }, money(c.totals.spend, 0)), h('td', { class: 'num' }, count(c.totals.leads)),
+            h('td', { class: 'num' }, money(c.totals.cpl)), h('td', { class: 'num' }, count(c.totals.appointments)), h('td', { class: 'num' }, count(c.totals.sales)),
+            h('td', { class: 'num' }, pct(c.totals.roi)), h('td', { class: 'num' }, delta(c.totals.leads, c.previous.leads) || '—')))))))) : null,
     rep.carriedOver.length ? h('div', { class: 'panel' }, h('h2', {}, '⚠️ Carried over — still open and past due'),
       rep.carriedOver.map((t) => h('div', { class: 'rep-row' },
         h('span', { class: 'rep-check', style: { color: 'var(--danger)' } }, '!'),
@@ -969,6 +991,7 @@ async function renderReports(content, monthParam) {
 
   if (isOwner()) {
     const saved = await api('GET', '/api/reports/saved');
+    if (isStale(content, gen)) return;
     content.append(h('div', { class: 'panel no-print' }, h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Saved reports'),
       h('button', { class: 'btn sm', onclick: async () => { await api('POST', '/api/reports/save', { month: rep.month, client_view: rep.clientView }).catch(fail); toast('Saved a snapshot of this report'); rerender(); } }, 'Save snapshot')),
       h('p', { class: 'muted small' }, 'A snapshot of each month is saved automatically on the 1st (and emailed to the team if email is set up), so past months stay on record even if tasks are later changed.'),
@@ -994,9 +1017,400 @@ function snapshotText(rep) {
   return out.join('\n');
 }
 
+// ---------- campaigns ----------
+const money = (v, dp) => (v == null ? '—' : `$${Number(v).toLocaleString('en-US', { minimumFractionDigits: dp ?? (v % 1 ? 2 : 0), maximumFractionDigits: dp ?? 2 })}`);
+const count = (v) => (v == null ? '—' : Number(v).toLocaleString('en-US'));
+const pct = (v) => (v == null ? '—' : `${(v * 100).toLocaleString('en-US', { maximumFractionDigits: v < 0.1 ? 1 : 0 })}%`);
+const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+function rangePresets() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const d = (yy, mm, dd) => isoDay(new Date(yy, mm, dd));
+  const q = Math.floor(m / 3) * 3;
+  return {
+    this_month: ['This month', d(y, m, 1), d(y, m + 1, 0)],
+    last_month: ['Last month', d(y, m - 1, 1), d(y, m, 0)],
+    last_7: ['Last 7 days', d(y, m, now.getDate() - 6), d(y, m, now.getDate())],
+    last_30: ['Last 30 days', d(y, m, now.getDate() - 29), d(y, m, now.getDate())],
+    this_quarter: ['This quarter', d(y, q, 1), d(y, q + 3, 0)],
+    ytd: ['Year to date', d(y, 0, 1), d(y, m, now.getDate())],
+  };
+}
+
+/** Change vs previous period, as an arrow + percent. lowerIsBetter flips which direction is good. */
+function delta(cur, prev, lowerIsBetter = false) {
+  if (cur == null || prev == null || prev === 0) return null;
+  const change = (cur - prev) / Math.abs(prev);
+  if (Math.abs(change) < 0.005) return h('span', { class: 'delta' }, '→ no change');
+  const good = lowerIsBetter ? change < 0 : change > 0;
+  return h('span', { class: `delta ${good ? 'good' : 'bad'}`, title: `Previous period: ${prev}` },
+    `${change > 0 ? '▲' : '▼'} ${Math.abs(change * 100).toFixed(Math.abs(change) < 0.1 ? 1 : 0)}%`);
+}
+
+/** Single-series column chart (SVG) with a hover tooltip. points: [{label, value, tip}] */
+function columnChart(points, { format = count, height = 160, title = '' } = {}) {
+  const wrap = h('div', { class: 'chart', role: 'img', 'aria-label': title });
+  if (!points.length || points.every((p) => p.value == null)) {
+    wrap.append(h('div', { class: 'muted small', style: { padding: '24px 0' } }, 'No data yet'));
+    return wrap;
+  }
+  const W = Math.max(500, points.length * 44 + 48);
+  const H = height;
+  const pad = { l: 44, r: 8, t: 10, b: 24 };
+  const max = Math.max(...points.map((p) => p.value || 0)) || 1;
+  const step = niceStep(max / 4);
+  const top = Math.ceil(max / step) * step;
+  const y = (v) => pad.t + (H - pad.t - pad.b) * (1 - v / top);
+  const band = (W - pad.l - pad.r) / points.length;
+  const bw = Math.min(24, band * 0.6);
+  const ns = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs, text) => { const e = document.createElementNS(ns, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text != null) e.textContent = text; return e; };
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'chart-svg' });
+  for (let v = 0; v <= top + 1e-9; v += step) {
+    svg.append(el('line', { x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v), class: 'grid' }));
+    svg.append(el('text', { x: pad.l - 6, y: y(v) + 4, 'text-anchor': 'end', class: 'tick' }, compact(v, format)));
+  }
+  const tip = h('div', { class: 'chart-tip hidden' });
+  points.forEach((p, i) => {
+    const cx = pad.l + band * i + band / 2;
+    if (points.length <= 14 || i % Math.ceil(points.length / 14) === 0) {
+      svg.append(el('text', { x: cx, y: H - 6, 'text-anchor': 'middle', class: 'tick' }, p.label));
+    }
+    if (p.value == null) return;
+    const x0 = cx - bw / 2;
+    const yTop = y(p.value);
+    const yBase = y(0);
+    const r = Math.min(4, (yBase - yTop) / 2, bw / 2);
+    const d = `M${x0},${yBase} L${x0},${yTop + r} Q${x0},${yTop} ${x0 + r},${yTop} L${x0 + bw - r},${yTop} Q${x0 + bw},${yTop} ${x0 + bw},${yTop + r} L${x0 + bw},${yBase} Z`;
+    svg.append(el('path', { d, class: 'bar' }));
+    const hit = el('rect', { x: cx - band / 2, y: pad.t, width: band, height: H - pad.t - pad.b, class: 'hit' });
+    hit.addEventListener('mouseenter', () => {
+      tip.replaceChildren(h('div', { class: 'small muted' }, p.tip || p.label), h('strong', {}, format(p.value)));
+      tip.classList.remove('hidden');
+      const rect = wrap.getBoundingClientRect();
+      tip.style.left = `${Math.min(rect.width - 140, Math.max(0, (cx / W) * rect.width - 60))}px`;
+    });
+    hit.addEventListener('mouseleave', () => tip.classList.add('hidden'));
+    svg.append(hit);
+  });
+  if (title) wrap.append(h('div', { class: 'chart-title' }, title));
+  wrap.append(svg, tip);
+  return wrap;
+}
+function niceStep(raw) {
+  const p = 10 ** Math.floor(Math.log10(raw || 1));
+  const n = raw / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
+}
+function compact(v, format) {
+  if (v >= 10000) return `${format === count ? '' : '$'}${(v / 1000).toLocaleString('en-US', { maximumFractionDigits: 1 })}K`;
+  return format === count ? count(v) : money(v, 0);
+}
+
+async function renderCampaigns(content) {
+  const gen = beginRender(content);
+  campaignCache = null;
+  const presets = rangePresets();
+  let preset = store.get('campPreset', 'this_month');
+  let custom = store.get('campCustom', null);
+  const biz = store.get('campBiz', '');
+  const clientVersion = isStaff() ? store.get('campClient', false) : false;
+  let [from, to] = preset === 'custom' && custom ? custom : (presets[preset] || presets.this_month).slice(1);
+  const rerender = () => { content.replaceChildren(); renderCampaigns(content); };
+
+  const fromIn = h('input', { type: 'date', value: from, style: { width: '150px' } });
+  const toIn = h('input', { type: 'date', value: to, style: { width: '150px' } });
+  const applyCustom = () => { if (fromIn.value && toIn.value) { store.set('campPreset', 'custom'); store.set('campCustom', [fromIn.value, toIn.value]); rerender(); } };
+  fromIn.onchange = applyCustom;
+  toIn.onchange = applyCustom;
+  const qs = `from=${from}&to=${to}${biz ? `&business_id=${biz}` : ''}${clientVersion ? '&client_view=1' : ''}`;
+
+  content.append(h('div', { class: 'page-head no-print' },
+    h('h1', { class: 'grow' }, 'Campaigns'),
+    isStaff() ? h('button', { class: 'btn primary', onclick: () => resultModal() }, '+ Add results') : null,
+    isStaff() ? h('button', { class: 'btn', onclick: () => campaignModal() }, '+ Campaign') : null,
+    isStaff() ? h('button', { class: 'btn', onclick: importModal }, 'Import CSV') : null),
+  h('div', { class: 'page-head no-print filters' },
+    h('select', { style: { width: '160px' }, onchange: (e) => { store.set('campPreset', e.target.value); rerender(); } },
+      Object.entries(presets).map(([k, [label]]) => h('option', { value: k, selected: k === preset }, label)),
+      h('option', { value: 'custom', selected: preset === 'custom' }, 'Custom dates')),
+    fromIn, h('span', { class: 'muted' }, 'to'), toIn,
+    state.boot.businesses.length > 1 ? h('select', { style: { width: '220px' }, onchange: (e) => { store.set('campBiz', e.target.value); rerender(); } },
+      h('option', { value: '' }, 'All businesses'),
+      state.boot.businesses.map((b) => h('option', { value: b.id, selected: String(b.id) === String(biz) }, b.name))) : null,
+    isStaff() ? h('label', { class: 'switch', title: 'Only campaigns marked visible to clients' },
+      h('input', { type: 'checkbox', checked: clientVersion, onchange: (e) => { store.set('campClient', e.target.checked); rerender(); } }), 'Client version') : null,
+    h('span', { class: 'grow' }),
+    h('a', { class: 'btn', href: `/api/campaigns/export.csv?${qs}` }, '⬇ CSV'),
+    h('button', { class: 'btn', onclick: () => window.print() }, '🖨 Print / PDF')));
+
+  let sum;
+  try { sum = await api('GET', `/api/campaigns/summary?${qs}`); } catch (err) { return fail(err); }
+  if (isStale(content, gen)) return;
+  const fmtRange = (a, b) => `${new Date(`${a}T12:00`).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })} – ${new Date(`${b}T12:00`).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}`;
+  content.append(h('div', { class: 'rep-title' },
+    h('h1', {}, 'Campaign performance'),
+    h('div', { class: 'muted small' }, fmtRange(sum.from, sum.to), ' · compared with ', fmtRange(sum.previous.from, sum.previous.to), clientVersion ? ' · client version' : '')));
+
+  if (!sum.businesses.length) {
+    content.append(h('div', { class: 'panel empty' },
+      h('p', {}, isStaff() ? 'No campaigns yet.' : 'No campaign reports have been shared with you yet.'),
+      isOwner() ? h('div', { class: 'row', style: { justifyContent: 'center' } },
+        h('button', {
+          class: 'btn primary',
+          onclick: async () => {
+            try { const r = await api('POST', '/api/campaigns/starter', {}); toast(`Added ${r.campaigns} campaigns${r.businesses ? ` and ${r.businesses} new businesses` : ''}`); await refreshAll(); } catch (err) { fail(err); }
+          },
+        }, 'Add our campaigns (RetireFlow IUL, CardVaulters, Annuity, Search…)'),
+        h('button', { class: 'btn', onclick: () => campaignModal() }, '+ Add one campaign')) : null));
+    return;
+  }
+
+  const T = sum.totals;
+  const P = sum.previousTotals;
+  const tile = (label, value, d) => h('div', { class: 'stat' }, h('div', { class: 'v' }, value), h('div', { class: 'muted' }, label), d ? h('div', { class: 'small' }, d) : null);
+  content.append(h('div', { class: 'stats' },
+    tile('Ad spend', money(T.spend, 0), delta(T.spend, P.spend, true)),
+    tile('Leads', count(T.leads), delta(T.leads, P.leads)),
+    tile('Cost per lead', money(T.cpl), delta(T.cpl, P.cpl, true)),
+    tile('Appointments', count(T.appointments), delta(T.appointments, P.appointments)),
+    tile('Sales', count(T.sales), delta(T.sales, P.sales)),
+    tile('Return on spend', T.roi == null ? '—' : pct(T.roi), T.revenue != null ? h('span', { class: 'muted' }, `${money(T.revenue, 0)} revenue`) : null)));
+
+  const cols = [
+    ['Spend', (t) => money(t.spend, 0)],
+    ['Leads', (t) => count(t.leads)],
+    ['Cost / lead', (t) => money(t.cpl)],
+    ['Appts', (t) => count(t.appointments)],
+    ['Cost / appt', (t) => money(t.cost_per_appointment)],
+    ['Sales', (t) => count(t.sales)],
+    ['Revenue', (t) => money(t.revenue, 0)],
+    ['ROI', (t) => pct(t.roi)],
+  ];
+  for (const b of sum.businesses) {
+    content.append(h('div', { class: 'panel camp-panel' },
+      h('div', { class: 'row', style: { marginBottom: '8px' } },
+        h('span', { class: 'biz-dot', style: { background: b.color, width: '10px', height: '10px', borderRadius: '3px', display: 'inline-block' } }),
+        h('h2', { class: 'grow' }, b.name),
+        isStaff() ? h('button', { class: 'btn ghost sm no-print', onclick: () => campaignModal(null, b.id) }, '+ Campaign') : null),
+      h('div', { class: 'table-scroll' }, h('table', { class: 't camp-table' },
+        h('tr', {}, h('th', {}, 'Campaign'), cols.map(([c]) => h('th', { class: 'num' }, c)), h('th', { class: 'num' }, 'Leads vs prev')),
+        b.campaigns.map((c) => {
+          const t = c.totals;
+          const overTarget = c.target_cpl != null && t.cpl != null && t.cpl > c.target_cpl;
+          return h('tr', { class: 'clickable', onclick: () => campaignDrawer(c.id, { from: sum.from, to: sum.to }) },
+            h('td', {},
+              h('div', { class: 'camp-name' }, c.name),
+              h('div', { class: 'row', style: { gap: '4px', flexWrap: 'wrap', marginTop: '2px' } },
+                c.channel ? h('span', { class: 'chip' }, c.channel) : null,
+                c.status !== 'active' ? h('span', { class: 'chip' }, c.status) : null,
+                isStaff() ? (c.client_visible ? h('span', { class: 'chip client' }, '👁 Client') : h('span', { class: 'chip internal' }, '🔒 Internal')) : null,
+                c.target_cpl != null && t.cpl != null ? h('span', { class: `chip ${overTarget ? 'overdue' : 'done'}` }, overTarget ? `⚠ above $${c.target_cpl} target` : `✓ within $${c.target_cpl} target`) : null,
+                !c.entries ? h('span', { class: 'chip soon' }, 'no results this period') : null)),
+            cols.map(([, f]) => h('td', { class: 'num' }, f(t))),
+            h('td', { class: 'num' }, delta(t.leads, c.previous.leads) || h('span', { class: 'muted' }, '—')));
+        }),
+        b.campaigns.length > 1 ? h('tr', { class: 'total' }, h('td', {}, 'Total'), cols.map(([, f]) => h('td', { class: 'num' }, f(b.totals))), h('td', { class: 'num' }, delta(b.totals.leads, b.previous.leads) || '')) : null))));
+  }
+  content.append(h('p', { class: 'muted small no-print' }, 'Results count toward the period they start in. Click a campaign for its history and charts.'));
+}
+
+let campaignCache = null;
+async function allCampaigns() {
+  const p = rangePresets().this_month;
+  const s = await api('GET', `/api/campaigns/summary?from=2000-01-01&to=${p[2]}`);
+  campaignCache = s.businesses.flatMap((b) => b.campaigns.map((c) => ({ ...c, business_name: b.name })));
+  return campaignCache;
+}
+
+function campaignModal(existing = null, businessId = null) {
+  const bizSel = h('select', {}, state.boot.businesses.map((b) => h('option', { value: b.id, selected: b.id === (existing?.business_id ?? Number(businessId)) }, b.name)));
+  const f = {
+    name: h('input', { type: 'text', value: existing?.name || '', placeholder: 'e.g. Annuity National Lead Campaign' }),
+    channel: h('input', { type: 'text', value: existing?.channel || '', placeholder: 'e.g. Search, Facebook, Lead gen', list: 'channel-list' }),
+    status: h('select', {}, ['active', 'paused', 'ended'].map((v) => h('option', { value: v, selected: (existing?.status || 'active') === v }, v[0].toUpperCase() + v.slice(1)))),
+    target_cpl: h('input', { type: 'number', min: 0, step: '0.01', value: existing?.target_cpl ?? '', placeholder: 'optional' }),
+    monthly_budget: h('input', { type: 'number', min: 0, step: '1', value: existing?.monthly_budget ?? '', placeholder: 'optional' }),
+    notes: h('textarea', { rows: 2 }, existing?.notes || ''),
+    client_visible: h('input', { type: 'checkbox', checked: !!existing?.client_visible }),
+  };
+  modal(existing ? `Edit ${existing.name}` : 'New campaign', h('div', {},
+    h('datalist', { id: 'channel-list' }, ['Search', 'Lead gen', 'Facebook', 'Instagram', 'Google Ads', 'YouTube', 'Email', 'Direct mail'].map((c) => h('option', { value: c }))),
+    h('label', { class: 'field' }, h('span', {}, 'Business'), bizSel),
+    h('label', { class: 'field' }, h('span', {}, 'Campaign name'), f.name),
+    h('div', { class: 'grid2' },
+      h('label', { class: 'field' }, h('span', {}, 'Channel'), f.channel),
+      h('label', { class: 'field' }, h('span', {}, 'Status'), f.status),
+      h('label', { class: 'field' }, h('span', {}, 'Target cost per lead ($)'), f.target_cpl),
+      h('label', { class: 'field' }, h('span', {}, 'Monthly budget ($)'), f.monthly_budget)),
+    h('label', { class: 'field' }, h('span', {}, 'Notes'), f.notes),
+    h('label', { class: 'switch' }, f.client_visible, 'Clients of this business can see this campaign’s results')), [
+    existing ? h('button', {
+      class: 'btn danger',
+      style: { marginRight: 'auto' },
+      onclick: async () => { if (confirm(`Delete ${existing.name} and all its results?`)) { try { await api('DELETE', `/api/campaigns/${existing.id}`); closeModal(); closeDrawer(); renderMain(state.lastMain); } catch (err) { fail(err); } } },
+    }, 'Delete') : null,
+    h('button', { class: 'btn', onclick: closeModal }, 'Cancel'),
+    h('button', {
+      class: 'btn primary',
+      onclick: async () => {
+        const body = { business_id: Number(bizSel.value), name: f.name.value, channel: f.channel.value, status: f.status.value, target_cpl: f.target_cpl.value, monthly_budget: f.monthly_budget.value, notes: f.notes.value, client_visible: f.client_visible.checked };
+        try {
+          const c = existing ? await api('PATCH', `/api/campaigns/${existing.id}`, body) : await api('POST', '/api/campaigns', body);
+          closeModal();
+          renderMain(state.lastMain);
+          if (existing) campaignDrawer(c.id);
+          toast('Saved');
+        } catch (err) { fail(err); }
+      },
+    }, 'Save')]);
+}
+
+async function resultModal(campaignId = null, existing = null) {
+  const list = campaignCache || await allCampaigns().catch(() => []);
+  if (!list.length) return toast('Add a campaign first', true);
+  const campSel = h('select', { disabled: !!existing }, state.boot.businesses.map((b) => {
+    const cs = list.filter((c) => c.business_id === b.id);
+    return cs.length ? h('optgroup', { label: b.name }, cs.map((c) => h('option', { value: c.id, selected: c.id === campaignId }, c.name))) : null;
+  }));
+  const kind = h('select', {}, [['week', 'A week (Mon–Sun)'], ['month', 'A month'], ['custom', 'Custom dates']].map(([v, l]) => h('option', { value: v }, l)));
+  const today = new Date();
+  const monday = new Date(today); monday.setDate(today.getDate() - ((today.getDay() + 6) % 7) - 7); // last week
+  const weekIn = h('input', { type: 'date', value: isoDay(monday) });
+  const monthIn = h('input', { type: 'month', value: isoDay(new Date(today.getFullYear(), today.getMonth() - 1, 1)).slice(0, 7) });
+  const startIn = h('input', { type: 'date', value: existing?.period_start || '' });
+  const endIn = h('input', { type: 'date', value: existing?.period_end || '' });
+  const periodBox = h('div');
+  const drawPeriod = () => periodBox.replaceChildren(
+    kind.value === 'week' ? h('label', { class: 'field' }, h('span', {}, 'Any day in the week'), weekIn)
+      : kind.value === 'month' ? h('label', { class: 'field' }, h('span', {}, 'Month'), monthIn)
+        : h('div', { class: 'grid2' }, h('label', { class: 'field' }, h('span', {}, 'From'), startIn), h('label', { class: 'field' }, h('span', {}, 'To'), endIn)));
+  if (existing) kind.value = 'custom';
+  kind.onchange = drawPeriod;
+  drawPeriod();
+  const nums = {};
+  const numField = (key, label, step = '1') => {
+    nums[key] = h('input', { type: 'number', min: 0, step, value: existing?.[key] ?? '', placeholder: '—' });
+    return h('label', { class: 'field' }, h('span', {}, label), nums[key]);
+  };
+  const notes = h('input', { type: 'text', value: existing?.notes || '', placeholder: 'optional' });
+  const period = () => {
+    if (kind.value === 'week') {
+      const d = new Date(`${weekIn.value}T12:00`);
+      const mon = new Date(d); mon.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+      const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+      return [isoDay(mon), isoDay(sun)];
+    }
+    if (kind.value === 'month') {
+      const [y, m] = monthIn.value.split('-').map(Number);
+      return [isoDay(new Date(y, m - 1, 1)), isoDay(new Date(y, m, 0))];
+    }
+    return [startIn.value, endIn.value || startIn.value];
+  };
+  modal(existing ? 'Edit results' : 'Add campaign results', h('div', {},
+    h('label', { class: 'field' }, h('span', {}, 'Campaign'), campSel),
+    h('label', { class: 'field' }, h('span', {}, 'Period'), kind),
+    periodBox,
+    h('div', { class: 'grid3' },
+      numField('spend', 'Ad spend ($)', '0.01'), numField('leads', 'Leads'), numField('appointments', 'Appointments'),
+      numField('sales', 'Sales / policies'), numField('revenue', 'Revenue ($)', '0.01'), numField('clicks', 'Clicks'),
+      numField('impressions', 'Impressions')),
+    h('label', { class: 'field' }, h('span', {}, 'Notes'), notes),
+    h('p', { class: 'small muted' }, 'Leave anything you don’t track blank. Entering the same campaign and period again replaces the earlier numbers.')), [
+    h('button', { class: 'btn', onclick: closeModal }, 'Cancel'),
+    h('button', {
+      class: 'btn primary',
+      onclick: async () => {
+        const [period_start, period_end] = period();
+        const body = { period_start, period_end, notes: notes.value };
+        for (const [k, el] of Object.entries(nums)) body[k] = el.value === '' ? null : el.value;
+        try {
+          if (existing) await api('PATCH', `/api/campaign-results/${existing.id}`, body);
+          else await api('POST', `/api/campaigns/${campSel.value}/results`, body);
+          closeModal();
+          toast('Results saved');
+          renderMain(state.lastMain);
+          if (state.drawerCampaignId) campaignDrawer(state.drawerCampaignId);
+        } catch (err) { fail(err); }
+      },
+    }, 'Save results')]);
+}
+
+function importModal() {
+  const file = h('input', { type: 'file', accept: '.csv,text/csv' });
+  const text = h('textarea', { rows: 5, placeholder: 'Campaign,Start,End,Spend,Leads,Appointments,Sales,Revenue\nRetireFlow IUL Campaigns,2026-10-01,2026-10-31,1200,48,12,3,9000' });
+  const out = h('div', { class: 'result' });
+  modal('Import results from CSV', h('div', {},
+    h('p', { class: 'small' }, 'One row per campaign per period. Column names from Google Ads and Facebook exports work too (Cost, Amount spent, Results, Conversions, Day, Week…). “Month” can be like 2026-10.'),
+    h('label', { class: 'field' }, h('span', {}, 'CSV file'), file),
+    h('label', { class: 'field' }, h('span', {}, 'or paste it'), text),
+    out), [
+    h('button', { class: 'btn', onclick: closeModal }, 'Close'),
+    h('button', {
+      class: 'btn primary',
+      onclick: async () => {
+        const csv = file.files[0] ? await file.files[0].text() : text.value;
+        if (!csv.trim()) return toast('Choose a file or paste CSV', true);
+        try {
+          const r = await api('POST', '/api/campaigns/import', { csv });
+          out.replaceChildren(h('div', { class: 'okline' }, `✓ Imported ${r.imported} row${r.imported === 1 ? '' : 's'}`), ...r.errors.map((e) => h('div', { class: 'errline' }, `✗ ${e}`)));
+          if (r.imported) renderMain(state.lastMain);
+        } catch (err) { fail(err); }
+      },
+    }, 'Import')]);
+}
+
+async function campaignDrawer(id) {
+  let c;
+  try { c = await api('GET', `/api/campaigns/${id}`); } catch (err) { return fail(err); }
+  closeDrawer();
+  state.drawerCampaignId = id;
+  const chrono = [...c.results].reverse().slice(-12);
+  const label = (r) => {
+    const a = new Date(`${r.period_start}T12:00`);
+    const b = new Date(`${r.period_end}T12:00`);
+    const monthly = a.getDate() === 1 && new Date(b.getFullYear(), b.getMonth() + 1, 0).getDate() === b.getDate() && a.getMonth() === b.getMonth();
+    return monthly ? a.toLocaleDateString([], { month: 'short' }) : a.toLocaleDateString([], { month: 'numeric', day: 'numeric' });
+  };
+  const span = (r) => (r.period_start === r.period_end ? r.period_start : `${r.period_start} → ${r.period_end}`);
+  const drawer = h('div', { class: 'drawer', role: 'dialog', 'aria-label': c.name },
+    h('div', { class: 'drawer-head' },
+      h('span', { class: 'biz-dot', style: { background: c.business_color, width: '10px', height: '10px', borderRadius: '3px', display: 'inline-block' } }),
+      h('span', { class: 'muted small grow' }, c.business_name, c.channel ? ` · ${c.channel}` : '', ` · ${c.status}`),
+      c.canEdit ? h('button', { class: 'btn ghost sm', onclick: () => campaignModal(c) }, 'Edit campaign') : null,
+      h('button', { class: 'btn ghost', onclick: () => { closeDrawer(); state.drawerCampaignId = null; }, 'aria-label': 'Close' }, '✕')),
+    h('div', { class: 'drawer-body' },
+      h('h2', {}, c.name),
+      c.target_cpl != null || c.monthly_budget != null ? h('div', { class: 'row muted small', style: { margin: '4px 0 10px', gap: '14px' } },
+        c.target_cpl != null ? h('span', {}, `Target cost per lead: ${money(c.target_cpl)}`) : null,
+        c.monthly_budget != null ? h('span', {}, `Monthly budget: ${money(c.monthly_budget, 0)}`) : null) : null,
+      c.notes ? h('p', { class: 'desc-view' }, c.notes) : null,
+      c.canEdit ? h('button', { class: 'btn primary sm', style: { margin: '6px 0 12px' }, onclick: () => resultModal(c.id) }, '+ Add results') : null,
+      c.results.length ? [
+        columnChart(chrono.map((r) => ({ label: label(r), value: r.leads, tip: span(r) })), { title: 'Leads per period' }),
+        columnChart(chrono.map((r) => ({ label: label(r), value: r.cpl, tip: span(r) })), { title: 'Cost per lead', format: (v) => money(v) }),
+        h('h3', { style: { margin: '16px 0 6px' } }, 'All results'),
+        h('div', { class: 'table-scroll' }, h('table', { class: 't small' },
+          h('tr', {}, ['Period', 'Spend', 'Leads', 'CPL', 'Appts', 'Sales', 'Revenue', ''].map((x, i) => h('th', { class: i && i < 7 ? 'num' : '' }, x))),
+          c.results.map((r) => h('tr', {},
+            h('td', {}, span(r), r.notes ? h('div', { class: 'muted' }, r.notes) : null),
+            h('td', { class: 'num' }, money(r.spend, 0)), h('td', { class: 'num' }, count(r.leads)), h('td', { class: 'num' }, money(r.cpl)),
+            h('td', { class: 'num' }, count(r.appointments)), h('td', { class: 'num' }, count(r.sales)), h('td', { class: 'num' }, money(r.revenue, 0)),
+            h('td', { style: { whiteSpace: 'nowrap', textAlign: 'right' } }, c.canEdit ? [
+              h('button', { class: 'btn ghost sm', onclick: () => resultModal(c.id, r) }, 'Edit'),
+              h('button', { class: 'btn ghost sm danger', onclick: async () => { if (confirm('Delete these results?')) { await api('DELETE', `/api/campaign-results/${r.id}`).catch(fail); campaignDrawer(c.id); renderMain(state.lastMain); } } }, '✕'),
+            ] : null))))),
+      ] : h('div', { class: 'muted', style: { margin: '20px 0' } }, 'No results logged yet.')));
+  document.body.append(h('div', { class: 'overlay', onclick: () => { closeDrawer(); state.drawerCampaignId = null; } }), drawer);
+}
+
 // ---------- notifications ----------
 async function renderNotifications(content) {
+  const gen = beginRender(content);
   const list = await api('GET', '/api/notifications');
+  if (isStale(content, gen)) return;
   content.append(
     h('div', { class: 'page-head' }, h('h1', { class: 'grow' }, 'Notifications'),
       h('button', { class: 'btn', onclick: async () => { await api('POST', '/api/notifications/read', { all: true }); refreshAll(); } }, 'Mark all read')),

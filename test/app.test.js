@@ -241,3 +241,67 @@ test('timezone setting is validated and used for deadlines', async () => {
   assert.equal(t.due_at, '2026-12-02T01:00:00.000Z'); // 5pm Pacific
   await owner.patch('/api/settings', { timezone: 'UTC' });
 });
+
+test('campaigns: starter set, results roll up into cost per lead / ROI, client visibility, CSV + automation import', async () => {
+  const starter = await owner.post('/api/campaigns/starter', {});
+  assert.equal(starter.status, 200, JSON.stringify(starter.data));
+  assert.equal(starter.data.campaigns, 6);
+  assert.equal((await owner.post('/api/campaigns/starter', {})).data.campaigns, 0, 'running it again adds nothing');
+
+  const all = (await owner.get('/api/campaigns/summary?from=2026-10-01&to=2026-10-31')).data;
+  const byBiz = Object.fromEntries(all.businesses.map((b) => [b.name, b.campaigns.map((c) => c.name)]));
+  assert.deepEqual(byBiz['Allied Elite Financial'], ['Annuity National Lead Campaign', 'Annuity General Lead Campaign', 'Allied Elite Financial Search Campaigns']);
+  assert.deepEqual(byBiz.Spectaculeads, ['RetireFlow IUL Campaigns']);
+  assert.deepEqual(byBiz.CardVaulters, ['Lead Gen Campaign']);
+  assert.deepEqual(byBiz['Pete Russo'], ['Pete Russo Search Campaigns']);
+
+  const national = all.businesses.find((b) => b.name === 'Allied Elite Financial').campaigns[0];
+  await owner.post(`/api/campaigns/${national.id}/results`, { period_start: '2026-10-01', period_end: '2026-10-15', spend: 1000, clicks: 400, impressions: 20000, leads: 40, appointments: 10, sales: 2, revenue: 3000 });
+  await owner.post(`/api/campaigns/${national.id}/results`, { period_start: '2026-10-16', period_end: '2026-10-31', spend: '$1,000', leads: 60, appointments: 15, sales: 3, revenue: 4500 });
+  await owner.post(`/api/campaigns/${national.id}/results`, { period_start: '2026-09-01', period_end: '2026-09-30', spend: 1500, leads: 50 });
+  // re-entering the same period replaces it instead of double counting
+  await owner.post(`/api/campaigns/${national.id}/results`, { period_start: '2026-10-16', period_end: '2026-10-31', spend: 1000, leads: 60, appointments: 15, sales: 3, revenue: 4500 });
+  assert.equal((await owner.post(`/api/campaigns/${national.id}/results`, { period_start: '2026-10-01', spend: -5 })).status, 400);
+
+  const oct = (await owner.get('/api/campaigns/summary?from=2026-10-01&to=2026-10-31')).data;
+  const t = oct.businesses.find((b) => b.name === 'Allied Elite Financial').campaigns[0].totals;
+  assert.equal(t.spend, 2000);
+  assert.equal(t.leads, 100);
+  assert.equal(t.cpl, 20);
+  assert.equal(t.cost_per_appointment, 80);
+  assert.equal(t.cost_per_sale, 400);
+  assert.equal(t.roi, 2.75); // (7500 - 2000) / 2000
+  assert.deepEqual(oct.previous, { from: '2026-09-01', to: '2026-09-30' }); // a whole month compares with the previous month
+  assert.equal(oct.businesses.find((b) => b.name === 'Allied Elite Financial').campaigns[0].previous.cpl, 30);
+  const wk = (await owner.get('/api/campaigns/summary?from=2026-10-05&to=2026-10-11')).data;
+  assert.deepEqual(wk.previous, { from: '2026-09-28', to: '2026-10-04' }); // other ranges: same length just before
+
+  // clients only see campaigns marked visible, in businesses shared with them
+  const aefBiz = oct.businesses.find((b) => b.name === 'Allied Elite Financial');
+  assert.equal((await clientUser.get('/api/campaigns/summary?from=2026-10-01&to=2026-10-31')).data.businesses.length, 0);
+  await owner.patch(`/api/campaigns/${national.id}`, { client_visible: true });
+  const seen = (await clientUser.get('/api/campaigns/summary?from=2026-10-01&to=2026-10-31')).data;
+  assert.deepEqual(seen.businesses.flatMap((b) => b.campaigns.map((c) => c.name)), ['Annuity National Lead Campaign']);
+  assert.equal((await clientUser.post(`/api/campaigns/${national.id}/results`, { period_start: '2026-10-01', leads: 1 })).status, 403);
+  assert.equal(aefBiz.id, project.business_id);
+
+  // CSV import (Google Ads / Facebook style headers) and month shorthand
+  const csv = 'Campaign,Week of,Cost,Leads,Appointments\n"RetireFlow IUL Campaigns",10/05/2026,"$250.50",10,2\nRetireFlow IUL Campaigns,2026-10,1000,40,\nNope,2026-10-01,5,1,0\n';
+  const imp = (await owner.post('/api/campaigns/import', { csv })).data;
+  assert.equal(imp.imported, 2);
+  assert.match(imp.errors[0], /Row 4: no campaign called "Nope"/);
+
+  // automation endpoint with an API token
+  const auto = await owner.post('/api/inbound/campaign-results', { campaign: 'Lead Gen Campaign', period_start: '2026-10-20', spend: 300, leads: 15 }, { authorization: `Bearer ${token}` });
+  assert.equal(auto.data.imported, 1, JSON.stringify(auto.data));
+
+  const after = (await owner.get('/api/campaigns/summary?from=2026-10-01&to=2026-10-31')).data;
+  assert.equal(after.businesses.find((b) => b.name === 'Spectaculeads').campaigns[0].totals.leads, 50);
+  assert.equal(after.businesses.find((b) => b.name === 'CardVaulters').campaigns[0].totals.cpl, 20);
+
+  // monthly report includes campaign performance
+  const rep = (await owner.get('/api/reports/monthly?month=2026-10')).data;
+  assert.ok(rep.campaigns.businesses.length >= 3);
+  const txt = await fetch(`${base}/api/campaigns/export.csv?from=2026-10-01&to=2026-10-31`, { headers: { cookie: '' } });
+  assert.equal(txt.status, 401);
+});

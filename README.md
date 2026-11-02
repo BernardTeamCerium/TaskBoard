@@ -124,6 +124,40 @@ Open **Monthly reports** in the sidebar and pick a month.
 - On the 1st of each month (at the digest hour) a snapshot of last month is saved under *Saved reports* and emailed to owners and team members. Snapshots keep the record even if tasks are later edited or deleted.
 - Done columns on boards only show the last 30 days, so boards stay tidy; older completed work is still in Reports.
 
+## Campaign performance
+
+**Campaigns** in the sidebar tracks how each company's marketing is doing.
+
+- The first time, click **Add our campaigns** to create:
+
+  | Company | Campaign | Channel |
+  |---|---|---|
+  | Spectaculeads | RetireFlow IUL Campaigns | Lead gen |
+  | CardVaulters | Lead Gen Campaign | Lead gen |
+  | Allied Elite Financial | Annuity National Lead Campaign | Lead gen |
+  | Allied Elite Financial | Annuity General Lead Campaign | Lead gen |
+  | Allied Elite Financial | Allied Elite Financial Search Campaigns | Search |
+  | Pete Russo | Pete Russo Search Campaigns | Search |
+
+  Missing companies are created too. Add, rename, pause or move campaigns any time.
+- **Add results** for a week, a month or any dates: ad spend, leads, appointments, sales/policies, revenue, clicks, impressions (leave out what you don't track). Entering the same campaign and period again replaces the numbers.
+- TaskBoard works out **cost per lead, cost per appointment, cost per sale, return on spend**, and shows the change against the previous period (the previous month when you're looking at a whole month).
+- Set a **target cost per lead** on a campaign to flag when it's running above target.
+- Click a campaign for its history: leads and cost per lead per period, and every entry.
+- **Import CSV** accepts your own sheet or Google Ads / Facebook exports (Cost, Amount spent, Results, Conversions, Day, Week, Month…). **⬇ CSV** and **Print / PDF** export the view.
+- Campaigns are internal by default. Tick *Clients of this business can see this campaign's results* to include it in that client's view. The **Client version** switch previews it.
+- The monthly report includes a campaign performance section.
+
+To fill it automatically (for example a Zapier/Make step after a Google Ads or Facebook report, or a Google Sheet row), POST to `/api/inbound/campaign-results` with an automation token:
+
+```bash
+curl -X POST https://YOUR-SITE/api/inbound/campaign-results \
+  -H "Authorization: Bearer YOUR_TOKEN" -H "Content-Type: application/json" \
+  -d '{"campaign": "RetireFlow IUL Campaigns", "period_start": "2026-11-03", "period_end": "2026-11-09", "spend": 450, "leads": 18, "appointments": 5}'
+```
+
+It also accepts `{"rows": [...]}` or `{"csv": "..."}` for several at once.
+
 ## Running on Netlify
 
 `netlify.toml` sets everything up:
@@ -168,6 +202,7 @@ src/inbound.js      inbound email/message handling
 src/notify.js       in-app/email/webhook notifications, reminders, digest
 src/trello.js       Trello JSON import
 src/reports.js      monthly reports
+src/campaigns.js    campaign performance: results, roll-ups, CSV import
 src/db-core.js      database schema and helpers (src/db.js picks the driver)
 public/             front end (no build step)
 netlify/            Netlify Functions, Blobs-backed runtime and its build script

@@ -19,6 +19,10 @@ import { importTrello } from './trello.js';
 import { buildMonthlyReport, reportText, saveReport, runMonthlyReport } from './reports.js';
 import { aiAvailable as aiOn, summarizeReport } from './ai.js';
 import { createProject, createBusinessWithProject } from './projects.js';
+import {
+  campaignSummary, campaignDetail, createCampaign, updateCampaign, deleteCampaign, addStarterCampaigns,
+  saveResult, updateResult, deleteResult, importResults, csvToObjects, summaryCsv,
+} from './campaigns.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -293,6 +297,27 @@ export function createApp(db) {
     res.json(addComment(db, req.user, req.params.id, { body: req.body.body, internal: !!req.body.internal }));
   });
 
+  // ---------- campaigns ----------
+  const summaryOpts = (q) => ({ from: q.from, to: q.to, businessId: q.business_id || null, clientView: q.client_view === '1' });
+  app.get('/api/campaigns/summary', requireUser, (req, res) => res.json(campaignSummary(db, req.user, summaryOpts(req.query))));
+  app.get('/api/campaigns/export.csv', requireUser, (req, res) => {
+    const s = campaignSummary(db, req.user, summaryOpts(req.query));
+    res.type('text/csv').attachment(`campaigns-${s.from}-to-${s.to}.csv`).send(summaryCsv(s));
+  });
+  app.post('/api/campaigns/starter', requireOwner, (req, res) => res.json(tx(db, () => addStarterCampaigns(db, req.user))));
+  app.post('/api/campaigns/import', requireStaff, (req, res) => {
+    const rows = typeof req.body.csv === 'string' ? csvToObjects(req.body.csv) : req.body.rows;
+    if (!Array.isArray(rows) || !rows.length) throw new HttpError(400, 'No rows found — the first line of the CSV should be the column names');
+    res.json(importResults(db, req.user, rows));
+  });
+  app.post('/api/campaigns', requireStaff, (req, res) => res.json(createCampaign(db, req.user, req.body)));
+  app.get('/api/campaigns/:id', requireUser, (req, res) => res.json(campaignDetail(db, req.user, req.params.id)));
+  app.patch('/api/campaigns/:id', requireStaff, (req, res) => res.json(updateCampaign(db, req.user, req.params.id, req.body)));
+  app.delete('/api/campaigns/:id', requireStaff, (req, res) => { deleteCampaign(db, req.user, req.params.id); res.json({ ok: true }); });
+  app.post('/api/campaigns/:id/results', requireStaff, (req, res) => res.json(saveResult(db, req.user, req.params.id, req.body)));
+  app.patch('/api/campaign-results/:id', requireStaff, (req, res) => res.json(updateResult(db, req.user, req.params.id, req.body)));
+  app.delete('/api/campaign-results/:id', requireStaff, (req, res) => { deleteResult(db, req.user, req.params.id); res.json({ ok: true }); });
+
   // ---------- monthly reports ----------
   app.get('/api/reports/monthly', requireUser, (req, res) => {
     res.json(buildMonthlyReport(db, req.user, {
@@ -519,6 +544,14 @@ export function createApp(db) {
     const body = b['stripped-text'] || b['body-plain'] || b.TextBody || b.text || b.body || stripHtml(b['body-html'] || b.HtmlBody || b.html || '');
     const sender = b.sender || b.from || b.From || b.FromFull?.Email || null;
     res.json(await handleInbound(db, { channel: 'email', tokenUser: req.tokenUser, sender, subject, body }));
+  });
+
+  // Campaign results from Zapier/Make/Google Sheets: JSON {campaign, period_start, spend, leads, ...},
+  // {rows: [...]}, or {csv: "..."}.
+  app.post('/api/inbound/campaign-results', tokenAuth, form, (req, res) => {
+    const b = req.body || {};
+    const rows = typeof b.csv === 'string' ? csvToObjects(b.csv) : Array.isArray(b.rows) ? b.rows : [b];
+    res.json(importResults(db, req.tokenUser, rows, { source: 'automation' }));
   });
 
   // Manual trigger for reminders (useful with an external cron).
