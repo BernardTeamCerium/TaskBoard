@@ -1,6 +1,59 @@
-import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+
+// Prefer Node's built-in SQLite (file-backed). Fall back to sql.js (WebAssembly,
+// in-memory) where node:sqlite isn't available or DB_DRIVER=sqljs — e.g. the
+// Netlify demo, where functions have no persistent disk anyway.
+let NodeDatabaseSync = null;
+if (process.env.DB_DRIVER !== 'sqljs') {
+  try { ({ DatabaseSync: NodeDatabaseSync } = await import('node:sqlite')); } catch { /* fall back */ }
+}
+let SQL = null;
+async function loadSqlJs() {
+  const require = createRequire(import.meta.url);
+  const initSqlJs = require('sql.js');
+  const wasmBinary = fs.readFileSync(require.resolve('sql.js/dist/sql-wasm.wasm'));
+  return initSqlJs({ wasmBinary });
+}
+if (!NodeDatabaseSync) SQL = await loadSqlJs();
+
+/** Minimal node:sqlite-compatible wrapper around a sql.js database. */
+class SqlJsDatabase {
+  constructor() { this.db = new SQL.Database(); }
+  exec(sql) { this.db.exec(sql); }
+  prepare(sql) {
+    const db = this.db;
+    const bind = (stmt, params) => {
+      if (!params.length) return;
+      if (params.length === 1 && params[0] && typeof params[0] === 'object' && !Array.isArray(params[0])) {
+        stmt.bind(Object.fromEntries(Object.entries(params[0]).map(([k, v]) => [`@${k}`, v])));
+      } else {
+        stmt.bind(params);
+      }
+    };
+    const rows = (params, one) => {
+      const stmt = db.prepare(sql);
+      try {
+        bind(stmt, params);
+        const out = [];
+        while (stmt.step()) { out.push(stmt.getAsObject()); if (one) break; }
+        return out;
+      } finally { stmt.free(); }
+    };
+    return {
+      get: (...params) => rows(params, true)[0],
+      all: (...params) => rows(params, false),
+      run: (...params) => {
+        const stmt = db.prepare(sql);
+        try { bind(stmt, params); stmt.step(); } finally { stmt.free(); }
+        const changes = db.getRowsModified();
+        const id = db.exec('SELECT last_insert_rowid() AS id')[0].values[0][0];
+        return { changes, lastInsertRowid: id };
+      },
+    };
+  }
+}
 
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
@@ -145,6 +198,17 @@ CREATE TABLE IF NOT EXISTS inbound_log (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- monthly report snapshots (kept even if tasks are later edited or deleted)
+CREATE TABLE IF NOT EXISTS reports (
+  id INTEGER PRIMARY KEY,
+  month TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'all',
+  client_view INTEGER NOT NULL DEFAULT 0,
+  data TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (month, scope, client_view)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -159,8 +223,13 @@ export const DEFAULT_COLUMNS = [
 ];
 
 export function openDb(file = process.env.DB_PATH || 'data/taskboard.db') {
-  if (file !== ':memory:') fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
-  const db = new DatabaseSync(file);
+  let db;
+  if (NodeDatabaseSync) {
+    if (file !== ':memory:') fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
+    db = new NodeDatabaseSync(file);
+  } else {
+    db = new SqlJsDatabase(); // in-memory only
+  }
   db.exec(SCHEMA);
   return db;
 }

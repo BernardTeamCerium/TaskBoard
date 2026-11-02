@@ -1,0 +1,18 @@
+# Netlify demo deployment: static front end + the API as one Netlify Function.
+# Data lives in memory and resets when the function restarts — it's a preview,
+# not a place to keep real work. See README › Deploying for permanent hosting.
+[build]
+  publish = "public"
+  command = "echo 'No build step needed'"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["sql.js", "express", "multer", "nodemailer", "@anthropic-ai/sdk"]
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200

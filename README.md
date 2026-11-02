@@ -10,6 +10,12 @@ A project board for running several businesses at once. It replaces a Trello set
   - **Comments** can be marked *internal note*. Clients never see those.
   - Owners and team members get a **Client view** toggle that shows exactly what the client sees.
 - **Updates from email and messages.** Forward an email, reply to a notification, send a text or post from Zapier/Make/Slack. TaskBoard creates tasks, moves them, changes deadlines and adds comments. If you add an Anthropic API key, Claude also interprets free-form messages that don't follow the format.
+- **Monthly reports.** Every completed task is kept with the date it was finished. The **Monthly reports** page shows, for any month:
+  - what was accomplished, grouped by business and tab, with who did it and whether it was on time;
+  - totals per team member;
+  - what's planned for next month (tasks due then);
+  - anything carried over that's still open and overdue.
+  It prints to PDF or downloads as text. A **Client version** switch strips out internal work and names so you can send it to a client, and with an Anthropic API key Claude can write a short written summary. On the 1st of each month a snapshot of last month is saved and emailed to the team.
 - **Trello import.** Brings across lists, cards, due dates, checklists, labels and comments.
 
 ## Quick start
@@ -98,6 +104,31 @@ Channels: in-app bell (always), email (`SMTP_URL`), and chat or phone push (`NOT
    - **One business, each list becomes a tab.**
 
 Everything imports as **internal**, so nothing is exposed to a client until you share it.
+
+## Monthly reports
+
+Open **Monthly reports** in the sidebar and pick a month.
+
+| Section | What's in it |
+|---|---|
+| Accomplished | Tasks finished that month, by business and tab, with who and on time / late |
+| By team member | How many tasks each person finished |
+| Planned for next month | Open tasks due next month |
+| Carried over | Open tasks already past due at month end |
+
+- **Client version** shows only client-visible work with no names. Clients who log in and open Reports always get this version.
+- **Print / PDF** gives a clean printable page; **Text** downloads a plain-text copy for email.
+- On the 1st of each month (at the digest hour) a snapshot of last month is saved under *Saved reports* and emailed to owners and team members. Snapshots keep the record even if tasks are later edited or deleted.
+- Done columns on boards only show the last 30 days, so boards stay tidy; older completed work is still in Reports.
+
+## Netlify demo
+
+`netlify.toml` deploys a **demo** to Netlify: the front end as a static site and the API as one Netlify Function. Netlify Functions have no permanent disk, so the demo runs on an in-memory database loaded with sample data. **Changes reset whenever the function restarts**, and anyone with the link can sign in with the demo buttons. Use it to look around, not to store real work.
+
+1. In Netlify choose **Add new site → Import an existing project → GitHub**, and pick this repository.
+2. Set the branch to deploy, leave the build settings as they are (they come from `netlify.toml`), and click **Deploy**.
+
+To run it for real on Netlify you'd need a hosted database (for example Netlify DB / Postgres) instead of SQLite. The simpler path is a host with a disk, below.
 
 ## Deploying
 

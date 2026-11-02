@@ -173,3 +173,35 @@ test('trello import maps lists to businesses', async () => {
   assert.equal(app.client_visible, 0);
   assert.equal(tasks.find((t) => t.title === 'App Preview').column_name, 'Done');
 });
+
+test('monthly report: completed this month, planned next month, client version hides internal work', async () => {
+  const now = new Date();
+  const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const nextMonthDue = new Date(now.getFullYear(), now.getMonth() + 1, 10, 17).toISOString();
+  const shared = (await owner.post('/api/tasks', { project_id: project.id, title: 'Report: shared win', client_visible: true })).data;
+  const internal = (await owner.post('/api/tasks', { project_id: project.id, title: 'Report: internal win' })).data;
+  await owner.patch(`/api/tasks/${shared.id}`, { status: { done: true } });
+  await owner.patch(`/api/tasks/${internal.id}`, { status: { done: true } });
+  await owner.post('/api/tasks', { project_id: project.id, title: 'Report: next month plan', due_at: nextMonthDue, client_visible: true });
+
+  const titles = (groups) => groups.flatMap((b) => b.projects.flatMap((p) => p.tasks.map((t) => t.title)));
+  const team = (await owner.get(`/api/reports/monthly?month=${month}`)).data;
+  assert.ok(titles(team.completed).includes('Report: shared win'));
+  assert.ok(titles(team.completed).includes('Report: internal win'));
+  assert.ok(titles(team.planned).includes('Report: next month plan'));
+  assert.ok(team.byPerson.length >= 1);
+
+  const clientCopy = (await owner.get(`/api/reports/monthly?month=${month}&client_view=1`)).data;
+  assert.ok(titles(clientCopy.completed).includes('Report: shared win'));
+  assert.ok(!titles(clientCopy.completed).includes('Report: internal win'));
+
+  // a client asking for the team version still only gets client-visible work
+  const asClient = (await clientUser.get(`/api/reports/monthly?month=${month}`)).data;
+  assert.equal(asClient.clientView, true);
+  assert.ok(!titles(asClient.completed).includes('Report: internal win'));
+
+  const txt = await fetch(`${base}/api/reports/monthly.txt?month=${month}`, { headers: { cookie: '' } });
+  assert.equal(txt.status, 401);
+  assert.equal((await owner.post('/api/reports/save', { month })).status, 200);
+  assert.equal((await owner.get('/api/reports/saved')).data.length, 1);
+});

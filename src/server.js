@@ -16,6 +16,8 @@ import { handleInbound, summarize } from './inbound.js';
 import { startScheduler, emailConfigured, runReminders } from './notify.js';
 import { aiAvailable } from './ai.js';
 import { importTrello } from './trello.js';
+import { buildMonthlyReport, reportText, saveReport, runMonthlyReport } from './reports.js';
+import { aiAvailable as aiOn, summarizeReport } from './ai.js';
 import { createProject, createBusinessWithProject } from './projects.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -26,6 +28,8 @@ export function createApp(db) {
   app.set('trust proxy', process.env.TRUST_PROXY === '1');
   app.use(express.json({ limit: '25mb' }));
   app.use(express.urlencoded({ extended: false, limit: '5mb' }));
+  // On Netlify the API is reached through /.netlify/functions/api/*; normalise to /api/*.
+  app.use((req, _res, next) => { req.url = req.url.replace(/^\/\.netlify\/functions\/api(?=\/|$)/, '/api'); next(); });
   app.use(express.static(path.join(here, '..', 'public'), { index: 'index.html' }));
 
   // ---------- auth helpers ----------
@@ -53,7 +57,7 @@ export function createApp(db) {
 
   // ---------- setup & login ----------
   app.get('/api/setup', (_req, res) => {
-    res.json({ needsSetup: !db.prepare('SELECT 1 FROM users LIMIT 1').get() });
+    res.json({ needsSetup: !db.prepare('SELECT 1 FROM users LIMIT 1').get(), demo: process.env.DEMO_MODE === '1' });
   });
 
   app.post('/api/setup', (req, res) => {
@@ -124,7 +128,7 @@ export function createApp(db) {
       projects,
       people,
       unread,
-      features: { email: emailConfigured(), ai: aiAvailable() },
+      features: { email: emailConfigured(), ai: aiAvailable(), demo: process.env.DEMO_MODE === '1' },
     });
   });
 
@@ -282,6 +286,40 @@ export function createApp(db) {
 
   app.post('/api/tasks/:id/comments', requireUser, (req, res) => {
     res.json(addComment(db, req.user, req.params.id, { body: req.body.body, internal: !!req.body.internal }));
+  });
+
+  // ---------- monthly reports ----------
+  app.get('/api/reports/monthly', requireUser, (req, res) => {
+    res.json(buildMonthlyReport(db, req.user, {
+      month: req.query.month, clientView: req.query.client_view === '1', businessId: req.query.business_id || null,
+    }));
+  });
+
+  app.get('/api/reports/monthly.txt', requireUser, (req, res) => {
+    const rep = buildMonthlyReport(db, req.user, { month: req.query.month, clientView: req.query.client_view === '1', businessId: req.query.business_id || null });
+    res.type('text/plain').attachment(`taskboard-report-${rep.month}.txt`).send(reportText(rep));
+  });
+
+  app.get('/api/reports/saved', requireOwner, (_req, res) => {
+    res.json(db.prepare('SELECT id, month, scope, client_view, created_at FROM reports ORDER BY month DESC, id DESC').all());
+  });
+
+  app.get('/api/reports/saved/:id', requireOwner, (req, res) => {
+    const row = db.prepare('SELECT data FROM reports WHERE id = ?').get(req.params.id);
+    if (!row) throw new HttpError(404, 'Report not found');
+    res.json(JSON.parse(row.data));
+  });
+
+  app.post('/api/reports/save', requireOwner, (req, res) => {
+    const rep = buildMonthlyReport(db, req.user, { month: req.body.month, clientView: !!req.body.client_view });
+    saveReport(db, rep, { clientView: !!req.body.client_view });
+    res.json({ ok: true });
+  });
+
+  app.post('/api/reports/summary', requireStaff, async (req, res) => {
+    if (!aiOn()) throw new HttpError(400, 'Set ANTHROPIC_API_KEY on the server to enable AI summaries');
+    const rep = buildMonthlyReport(db, req.user, { month: req.body.month, clientView: !!req.body.client_view, businessId: req.body.business_id || null });
+    res.json({ summary: await summarizeReport(reportText(rep), { clientView: rep.clientView }) });
   });
 
   // ---------- notifications ----------
@@ -480,5 +518,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.log(`  email notifications: ${emailConfigured() ? 'on' : 'off (set SMTP_URL)'}`);
     console.log(`  AI message parsing:  ${aiAvailable() ? 'on' : 'off (set ANTHROPIC_API_KEY)'}`);
   });
-  startScheduler(db);
+  startScheduler(db, { extraJobs: [runMonthlyReport] });
 }

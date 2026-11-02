@@ -152,10 +152,11 @@ export async function runDailyDigest(db, now = new Date()) {
   return count;
 }
 
-export function startScheduler(db, intervalMs = 5 * 60e3) {
+export function startScheduler(db, { intervalMs = 5 * 60e3, extraJobs = [] } = {}) {
   const tick = () => {
     try { runReminders(db); } catch (err) { console.error('[scheduler] reminders:', err); }
     runDailyDigest(db).catch((err) => console.error('[scheduler] digest:', err));
+    for (const job of extraJobs) Promise.resolve().then(() => job(db)).catch((err) => console.error('[scheduler]', err));
   };
   setTimeout(tick, 5000);
   return setInterval(tick, intervalMs);

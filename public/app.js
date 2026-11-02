@@ -104,10 +104,10 @@ async function route() {
   const app = $('#app');
   if (!state.boot) {
     try {
-      const { needsSetup } = await (await fetch('/api/setup')).json();
+      const { needsSetup, demo } = await (await fetch('/api/setup')).json();
       if (needsSetup) return renderSetup(app);
       const me = await fetch('/api/me');
-      if (me.status === 401) return renderLogin(app);
+      if (me.status === 401) return renderLogin(app, demo);
       await loadBoot();
     } catch (err) {
       app.replaceChildren(h('div', { class: 'auth' }, h('div', { class: 'card' }, h('h1', {}, 'Can’t reach the server'), h('p', { class: 'muted' }, err.message))));
@@ -140,13 +140,14 @@ function renderMain(hash) {
     if (first) { location.hash = `#/p/${first.id}`; return; }
     return renderEmptyBusiness(content, businessById(parts[1]));
   }
+  if (parts[0] === 'reports') return renderReports(content, parts[1]);
   if (parts[0] === 'notifications') return renderNotifications(content);
   if (parts[0] === 'settings') return renderSettings(content, parts[1] || (isOwner() ? 'businesses' : 'profile'));
   return renderDashboard(content);
 }
 
 // ---------- auth screens ----------
-function renderLogin(app) {
+function renderLogin(app, demo = false) {
   const err = h('div', { class: 'error' });
   const form = h('form', {
     onsubmit: async (e) => {
@@ -163,8 +164,18 @@ function renderLogin(app) {
   h('label', { class: 'field' }, h('span', {}, 'Password'), h('input', { type: 'password', name: 'password', required: true, autocomplete: 'current-password' })),
   err,
   h('button', { class: 'btn primary', style: { width: '100%', justifyContent: 'center' } }, 'Sign in'));
+  const demoLogin = (email) => {
+    form.querySelector('[name=email]').value = email;
+    form.querySelector('[name=password]').value = 'changeme123';
+    form.requestSubmit();
+  };
   app.replaceChildren(h('div', { class: 'auth' }, h('div', { class: 'card' },
-    h('h1', {}, 'TaskBoard'), h('p', { class: 'muted' }, 'Sign in to your workspace'), form)));
+    h('h1', {}, 'TaskBoard'), h('p', { class: 'muted' }, 'Sign in to your workspace'), form,
+    demo ? h('div', { style: { marginTop: '18px' } },
+      h('div', { class: 'small muted', style: { marginBottom: '8px' } }, 'Demo — try it as:'),
+      h('div', { style: { display: 'grid', gap: '6px' } },
+        [['bernard@example.com', 'Bernard (owner)'], ['pete@example.com', 'Pete (team)'], ['christine@example.com', 'Christine (team)'], ['client@example.com', 'A client (limited view)']]
+          .map(([email, label]) => h('button', { type: 'button', class: 'btn', onclick: () => demoLogin(email) }, label)))) : null)));
 }
 
 function renderSetup(app) {
@@ -200,6 +211,7 @@ function renderShell() {
     h('div', { class: 'brand' }, h('div', { class: 'logo' }, '▦'), 'TaskBoard'),
     h('nav', { class: 'nav', onclick: (e) => { if (e.target.closest('a')) $('.sidebar').classList.remove('open'); } },
       h('a', { href: '#/', 'data-nav': '#/' }, h('span', {}, '📅'), 'Deadlines'),
+      h('a', { href: '#/reports', 'data-nav': '#/reports' }, h('span', {}, '📊'), 'Monthly reports'),
       h('a', { href: '#/notifications', 'data-nav': '#/notifications' }, h('span', {}, '🔔'), 'Notifications',
         b.unread ? h('span', { class: 'badge', id: 'unread-badge' }, b.unread) : h('span', { id: 'unread-badge' })),
       h('div', { class: 'section' }, isStaff() ? 'Businesses' : 'Projects',
@@ -232,7 +244,8 @@ function renderShell() {
     isStaff() ? commandBar() : h('div', { class: 'grow' }),
     isStaff() ? h('button', { class: 'btn primary', onclick: () => newTaskModal() }, '+ Task') : null,
   );
-  app.replaceChildren(h('div', { class: 'shell' }, sidebar, h('div', { class: 'main' }, topbar, h('main', { class: 'content' }))));
+  const demoBar = b.features.demo ? h('div', { class: 'demo-bar' }, 'Demo site — sample data that resets periodically. Don’t enter real client information here.') : null;
+  app.replaceChildren(h('div', { class: 'shell' }, sidebar, h('div', { class: 'main' }, demoBar, topbar, h('main', { class: 'content' }))));
 }
 
 function highlightNav(hash) {
@@ -245,6 +258,7 @@ function highlightNav(hash) {
     const biz = proj && document.querySelector(`.nav a[data-biz="${proj.business_id}"]`);
     if (biz && !exact) biz.classList.add('active');
   }
+  if (hash.startsWith('#/reports')) document.querySelector('.nav a[data-nav="#/reports"]')?.classList.add('active');
   if (hash.startsWith('#/settings')) document.querySelector('.nav a[data-nav="#/settings"]')?.classList.add('active');
 }
 
@@ -451,7 +465,15 @@ function boardView(project, tasks, preview, reload) {
   const board = h('div', { class: 'board' });
   for (const col of project.columns) {
     const colTasks = tasks.filter((t) => t.column_id === col.id).sort((a, b) => a.position - b.position);
-    const body = h('div', { class: 'col-body' }, colTasks.map(cardEl));
+    // Keep Done columns tidy: show the last 30 days; older work lives on in Reports.
+    const cutoff = Date.now() - 30 * 864e5;
+    const showAll = store.get(`allDone:${project.id}`, false);
+    const older = col.is_done && !showAll ? colTasks.filter((t) => t.completed_at && new Date(t.completed_at) < cutoff) : [];
+    const shown = older.length ? colTasks.filter((t) => !older.includes(t)) : colTasks;
+    const body = h('div', { class: 'col-body' }, shown.map(cardEl),
+      older.length ? h('button', { class: 'btn ghost sm', onclick: () => { store.set(`allDone:${project.id}`, true); reload(); } }, `Show ${older.length} completed over 30 days ago`) : null,
+      col.is_done && showAll && colTasks.some((t) => t.completed_at && new Date(t.completed_at) < cutoff)
+        ? h('button', { class: 'btn ghost sm', onclick: () => { store.set(`allDone:${project.id}`, false); reload(); } }, 'Hide older completed') : null);
     const colEl = h('div', { class: 'col' },
       h('div', { class: 'col-head' }, col.is_done ? '✅' : null, col.name, h('span', { class: 'n' }, colTasks.length)),
       body);
@@ -805,6 +827,123 @@ function projectSettingsModal(project) {
       },
     }, 'Save'),
   ]);
+}
+
+// ---------- monthly reports ----------
+const fmtDay = (iso) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+function prevMonthKey() {
+  const d = new Date(); d.setDate(1);
+  // Early in the month, default to last month's report; otherwise this month so far.
+  if (new Date().getDate() <= 7) d.setMonth(d.getMonth() - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/** append() turns null into the text "null"; skip empty slots instead. */
+const appendAll = (el, ...kids) => el.append(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+
+async function renderReports(content, monthParam) {
+  if (monthParam) store.set('reportMonth', monthParam);
+  const month = store.get('reportMonth', prevMonthKey());
+  const clientVersion = isStaff() ? store.get('reportClient', false) : true;
+  const bizFilter = store.get('reportBiz', '');
+  const qs = `month=${month}${clientVersion ? '&client_view=1' : ''}${bizFilter ? `&business_id=${bizFilter}` : ''}`;
+  const rerender = () => { content.replaceChildren(); renderReports(content); };
+
+  const monthIn = h('input', { type: 'month', value: month, style: { width: '170px' }, onchange: (e) => { store.set('reportMonth', e.target.value); if (location.hash !== '#/reports') location.hash = '#/reports'; else rerender(); } });
+  content.append(h('div', { class: 'page-head no-print' },
+    h('h1', { class: 'grow' }, 'Monthly report'),
+    monthIn,
+    isStaff() ? h('select', { style: { width: '220px' }, onchange: (e) => { store.set('reportBiz', e.target.value); rerender(); } },
+      h('option', { value: '' }, 'All businesses'),
+      state.boot.businesses.map((b) => h('option', { value: b.id, selected: String(b.id) === String(bizFilter) }, b.name))) : null,
+    isStaff() ? h('label', { class: 'switch', title: 'Only client-visible work, no names — ready to send to a client' },
+      h('input', { type: 'checkbox', checked: clientVersion, onchange: (e) => { store.set('reportClient', e.target.checked); rerender(); } }), 'Client version') : null,
+    h('button', { class: 'btn', onclick: () => window.print() }, '🖨 Print / PDF'),
+    h('a', { class: 'btn', href: `/api/reports/monthly.txt?${qs}` }, '⬇ Text')));
+
+  const rep = await api('GET', `/api/reports/monthly?${qs}`);
+  const summaryBox = h('div');
+  const person = (t) => (!rep.clientView && t.assignee_name ? h('span', { class: 'chip' }, t.assignee_name) : null);
+  const section = (title, groups, row) => h('div', { class: 'panel' }, h('h2', {}, title),
+    groups.length ? groups.map((b) => h('div', { class: 'rep-biz' },
+      h('h3', { class: 'row' }, h('span', { class: 'biz-dot', style: { background: b.color, width: '10px', height: '10px', borderRadius: '3px', display: 'inline-block' } }), b.name, h('span', { class: 'chip' }, b.count)),
+      b.projects.map((p) => [
+        b.projects.length > 1 ? h('div', { class: 'muted small rep-proj' }, p.name) : null,
+        p.tasks.map(row),
+      ]))) : h('div', { class: 'muted' }, 'Nothing here.'));
+
+  appendAll(content,
+    h('div', { class: 'rep-title' },
+      h('h1', {}, `${rep.clientView ? 'Monthly update' : 'Team report'} — ${rep.label}`),
+      h('div', { class: 'muted small' }, `Generated ${new Date(rep.generatedAt).toLocaleString()}${bizFilter ? ` · ${businessById(bizFilter)?.name}` : ''}${rep.clientView ? ' · client version (internal work and names hidden)' : ''}`)),
+    h('div', { class: 'stats' },
+      h('div', { class: 'stat' }, h('div', { class: 'v', style: { color: 'var(--ok)' } }, rep.stats.completed), h('div', { class: 'muted' }, 'Completed')),
+      h('div', { class: 'stat' }, h('div', { class: 'v' }, rep.stats.onTime), h('div', { class: 'muted' }, 'Finished on time')),
+      h('div', { class: 'stat' }, h('div', { class: 'v' }, rep.stats.late), h('div', { class: 'muted' }, 'Finished late')),
+      h('div', { class: 'stat' }, h('div', { class: 'v' }, rep.stats.planned), h('div', { class: 'muted' }, `Planned for ${rep.nextLabel.split(' ')[0]}`)),
+      h('div', { class: `stat${rep.stats.carriedOver ? ' overdue' : ''}` }, h('div', { class: 'v' }, rep.stats.carriedOver), h('div', { class: 'muted' }, 'Carried over (overdue)'))),
+    isStaff() && state.boot.features.ai ? h('div', { class: 'panel no-print-empty' },
+      h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Summary'),
+        h('button', {
+          class: 'btn sm no-print',
+          onclick: async (e) => {
+            e.target.disabled = true; e.target.textContent = 'Writing…';
+            try {
+              const { summary } = await api('POST', '/api/reports/summary', { month: rep.month, client_view: rep.clientView, business_id: bizFilter || null });
+              summaryBox.replaceChildren(h('div', { class: 'desc-view' }, summary));
+            } catch (err) { fail(err); }
+            e.target.disabled = false; e.target.textContent = '✨ Write summary with Claude';
+          },
+        }, '✨ Write summary with Claude')),
+      summaryBox) : null,
+    section(`✅ Accomplished in ${rep.label}`, rep.completed, (t) => h('div', { class: 'rep-row' },
+      h('span', { class: 'rep-check' }, '✓'),
+      h('span', { class: 'grow' }, t.title),
+      person(t),
+      !rep.clientView && t.due_at ? (t.completed_at <= t.due_at ? h('span', { class: 'chip done' }, 'on time') : h('span', { class: 'chip overdue' }, 'late')) : null,
+      h('span', { class: 'muted small' }, fmtDay(t.completed_at)))),
+    !rep.clientView && rep.byPerson.length ? h('div', { class: 'panel' }, h('h2', {}, 'By team member'),
+      h('div', { class: 'rep-people' }, rep.byPerson.map((p) => h('div', { class: 'rep-person' },
+        h('span', { class: 'avatar lg' }, initials(p.name)), h('div', {}, h('strong', {}, p.name), h('div', { class: 'muted small' }, `${p.count} completed`)))))) : null,
+    section(`📅 Planned for ${rep.nextLabel}`, rep.planned, (t) => h('div', { class: 'rep-row' },
+      h('span', { class: 'rep-check muted' }, '•'),
+      h('span', { class: 'grow' }, t.title),
+      person(t),
+      h('span', { class: 'muted small' }, `due ${fmtDay(t.due_at)}`))),
+    rep.carriedOver.length ? h('div', { class: 'panel' }, h('h2', {}, '⚠️ Carried over — still open and past due'),
+      rep.carriedOver.map((t) => h('div', { class: 'rep-row' },
+        h('span', { class: 'rep-check', style: { color: 'var(--danger)' } }, '!'),
+        h('span', { class: 'grow' }, t.title, h('span', { class: 'muted small' }, ` · ${t.business_name}`)),
+        person(t),
+        h('span', { class: 'chip overdue' }, `was due ${fmtDay(t.due_at)}`)))) : null,
+  );
+
+  if (isOwner()) {
+    const saved = await api('GET', '/api/reports/saved');
+    content.append(h('div', { class: 'panel no-print' }, h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Saved reports'),
+      h('button', { class: 'btn sm', onclick: async () => { await api('POST', '/api/reports/save', { month: rep.month, client_view: rep.clientView }).catch(fail); toast('Saved a snapshot of this report'); rerender(); } }, 'Save snapshot')),
+      h('p', { class: 'muted small' }, 'A snapshot of each month is saved automatically on the 1st (and emailed to the team if email is set up), so past months stay on record even if tasks are later changed.'),
+      saved.length ? h('table', { class: 't' }, h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Version'), h('th', {}, 'Saved'), h('th', {})),
+        saved.map((r) => h('tr', {}, h('td', {}, r.month), h('td', {}, r.client_view ? 'Client' : 'Team'), h('td', { class: 'small' }, r.created_at),
+          h('td', { style: { textAlign: 'right' } }, h('button', {
+            class: 'btn sm',
+            onclick: async () => {
+              const data = await api('GET', `/api/reports/saved/${r.id}`);
+              const w = window.open('', '_blank');
+              if (w) { w.document.title = `Report ${r.month}`; w.document.body.innerHTML = `<pre style="font:14px/1.5 system-ui;white-space:pre-wrap;padding:24px">${escapeHtml(snapshotText(data))}</pre>`; }
+            },
+          }, 'Open'))))) : h('div', { class: 'muted small' }, 'No snapshots yet.')));
+  }
+}
+
+const escapeHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function snapshotText(rep) {
+  const out = [`${rep.clientView ? 'Monthly update' : 'Team report'} — ${rep.label}`, `Completed ${rep.stats.completed} · Planned ${rep.stats.planned} · Carried over ${rep.stats.carriedOver}`, '', 'ACCOMPLISHED'];
+  for (const b of rep.completed) { out.push(`\n${b.name}`); for (const p of b.projects) for (const t of p.tasks) out.push(`  ✓ ${t.title}${t.assignee_name && !rep.clientView ? ` — ${t.assignee_name}` : ''} (${fmtDay(t.completed_at)})`); }
+  out.push('', `PLANNED FOR ${rep.nextLabel.toUpperCase()}`);
+  for (const b of rep.planned) { out.push(`\n${b.name}`); for (const p of b.projects) for (const t of p.tasks) out.push(`  • ${t.title} — due ${fmtDay(t.due_at)}`); }
+  return out.join('\n');
 }
 
 // ---------- notifications ----------

@@ -126,3 +126,21 @@ export async function interpretWithClaude(db, user, { subject, body }) {
   });
   return { actions, clarification: parsed.clarification };
 }
+
+/** Turn a monthly report into a short narrative for the team or a client. */
+export async function summarizeReport(text, { clientView = false } = {}) {
+  const client = await getClient();
+  const response = await client.beta.messages.create({
+    model: MODEL,
+    max_tokens: 16000,
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default',
+    output_config: { effort: 'low' },
+    system: clientView
+      ? 'You write a short, warm monthly progress update from an agency to its client. Use only the facts in the report. Two short paragraphs: what was delivered this month, and what is planned next month. Plain text, no headings, no invented details.'
+      : 'You write a concise monthly summary for a small team running several businesses. Use only the facts in the report. Cover highlights per business, who carried what, anything carried over or late, and the plan for next month. Plain text with short paragraphs or simple dashes; no invented details.',
+    messages: [{ role: 'user', content: `<report>\n${text}\n</report>` }],
+  });
+  if (response.stop_reason === 'refusal') throw new Error('The AI declined to summarise this report.');
+  return response.content.filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+}
