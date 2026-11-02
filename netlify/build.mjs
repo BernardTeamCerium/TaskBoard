@@ -2,6 +2,7 @@
 // Runs automatically on Netlify (see netlify.toml); locally: npm run build:netlify
 import * as esbuild from 'esbuild';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -17,21 +18,16 @@ await esbuild.build({
   target: 'node20',
   loader: { '.wasm': 'binary' },
   alias: { express: runtime('express-shim.js'), multer: runtime('multer-shim.js') },
-  // Bundled CommonJS packages (sql.js, nodemailer) expect require(), __dirname and
-  // __filename, which don't exist in an ES module — provide them.
-  banner: {
-    js: [
-      "import { createRequire as __tbRequire } from 'node:module';",
-      "import { fileURLToPath as __tbPath } from 'node:url';",
-      "import { dirname as __tbDir } from 'node:path';",
-      'const require = __tbRequire(import.meta.url);',
-      'const __filename = __tbPath(import.meta.url);',
-      'const __dirname = __tbDir(__filename);',
-    ].join('\n'),
-  },
+  inject: [runtime('cjs-globals.js')],
   plugins: [{
     name: 'netlify-swaps',
     setup(build) {
+      // sql.js calls require("node:fs"/"node:crypto"); esbuild would route those through
+      // a helper that needs a global `require`. Point them at the injected one instead.
+      build.onLoad({ filter: /[\\/]sql\.js[\\/]dist[\\/]sql-wasm\.js$/ }, async (args) => ({
+        contents: (await fs.readFile(args.path, 'utf8')).replace(/\brequire\("node:/g, '__tbNodeRequire("node:'),
+        loader: 'js',
+      }));
       // Use the Blobs-backed sql.js driver instead of src/db.js.
       build.onResolve({ filter: /^\.\/db\.js$/ }, (args) => (
         args.importer.includes(`${path.sep}src${path.sep}`) ? { path: runtime('db-netlify.js') } : undefined));

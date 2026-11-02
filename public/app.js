@@ -1330,7 +1330,8 @@ async function resultModal(campaignId = null, existing = null) {
           if (existing) await api('PATCH', `/api/campaign-results/${existing.id}`, body);
           else await api('POST', `/api/campaigns/${campSel.value}/results`, body);
           closeModal();
-          toast('Results saved');
+          const fmt = (d) => new Date(`${d}T12:00`).toLocaleDateString([], { month: 'short', day: 'numeric' });
+          toast(`Results saved for ${fmt(period_start)}${period_end !== period_start ? ` – ${fmt(period_end)}` : ''}`);
           renderMain(state.lastMain);
           if (state.drawerCampaignId) campaignDrawer(state.drawerCampaignId);
         } catch (err) { fail(err); }

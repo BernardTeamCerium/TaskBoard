@@ -27,6 +27,30 @@ function fakeStore() {
   };
 }
 
+// Netlify's packager prepends this to every ES-module function (zip-it-and-ship-it's CJS_SHIM).
+// A bundle that declares the same names fails to load with "Identifier ... has already been declared".
+const NETLIFY_CJS_SHIM = `
+import {createRequire as ___nfyCreateRequire} from "module";
+import {fileURLToPath as ___nfyFileURLToPath} from "url";
+import {dirname as ___nfyPathDirname} from "path";
+let __filename=___nfyFileURLToPath(import.meta.url);
+let __dirname=___nfyPathDirname(___nfyFileURLToPath(import.meta.url));
+let require=___nfyCreateRequire(import.meta.url);
+`;
+
+test('bundle still loads with the header Netlify adds to functions', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const src = fs.readFileSync(new URL('../netlify/dist/runtime.mjs', import.meta.url), 'utf8');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-netlify-'));
+  const file = path.join(dir, 'api.mjs');
+  fs.writeFileSync(file, NETLIFY_CJS_SHIM + src);
+  const mod = await import(file);
+  assert.equal(typeof mod.handleRequest, 'function');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 const { createRuntime } = await import('../netlify/dist/runtime.mjs');
 const store = fakeStore();
 const A = createRuntime({ getStore: () => store });
