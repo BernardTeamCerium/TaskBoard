@@ -16,11 +16,13 @@ import { initSql, openDbFromBytes, totalChanges, applyTimezone } from './db-netl
 const KEY = 'taskboard.sqlite';
 
 export function createRuntime({ getStore }) {
-  let store = null;
-  let state = null; // { db, app, etag }
+  let state = null; // { db, app, etag, version, exists }
   let queue = Promise.resolve();
 
-  const getS = () => (store ||= getStore());
+  // Netlify hands each function call its own short-lived Blobs credentials, so the
+  // store must be created per call — never cached across requests (that gives 401s).
+  let store = null;
+  const getS = () => store;
   const exclusive = (fn) => {
     const run = queue.then(fn, fn);
     queue = run.catch(() => {});
@@ -71,6 +73,7 @@ export function createRuntime({ getStore }) {
   /** Run fn(db) with the latest data and persist any changes, retrying on conflicts. */
   async function withDb(fn) {
     return exclusive(async () => {
+      store = getStore();
       for (let attempt = 0; attempt < 10; attempt++) {
         // back off a little (with jitter) after a conflict so instances don't keep colliding
         if (attempt) await new Promise((r) => setTimeout(r, Math.random() * 40 * attempt));
@@ -133,6 +136,10 @@ export function createRuntime({ getStore }) {
       return toResponse(res);
     } catch (err) {
       console.error('[taskboard]', err);
+      if (err.name === 'BlobsInternalError' || err.name === 'MissingBlobsEnvironmentError') {
+        // A storage problem, not the visitor's fault — don't pass Netlify's status (e.g. 401) through.
+        return Response.json({ error: `Storage error: ${err.message}` }, { status: 503 });
+      }
       return Response.json({ error: err.status ? err.message : 'Something went wrong' }, { status: err.status || 500 });
     }
   }
@@ -148,6 +155,7 @@ export function createRuntime({ getStore }) {
     // Daily backup copy (kept as a separate blob per day).
     await exclusive(async () => {
       if (!state) return;
+      store = getStore();
       const day = now.toISOString().slice(0, 10);
       await getS().set(`backups/${day}.sqlite`, state.db.export(), { onlyIfNew: true });
     });

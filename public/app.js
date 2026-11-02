@@ -112,7 +112,10 @@ async function route() {
   if (!state.boot) {
     try {
       const setupRes = await fetch('/api/setup');
-      if (!setupRes.ok) throw new Error(`The server returned an error (${setupRes.status}). If you just deployed, check the Netlify function log.`);
+      if (!setupRes.ok) {
+        const detail = await setupRes.json().then((d) => d.error).catch(() => null);
+        throw new Error(`The server returned an error (${setupRes.status})${detail ? `: ${detail}` : ''}. If you just deployed, check Netlify › Logs › Functions › api.`);
+      }
       const { needsSetup } = await setupRes.json();
       if (needsSetup) return renderSetup(app);
       const me = await fetch('/api/me');

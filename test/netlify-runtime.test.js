@@ -53,8 +53,26 @@ test('bundle still loads with the header Netlify adds to functions', async () =>
 
 const { createRuntime } = await import('../netlify/dist/runtime.mjs');
 const store = fakeStore();
-const A = createRuntime({ getStore: () => store });
-const B = createRuntime({ getStore: () => store });
+
+// Like Netlify: every function call gets short-lived credentials. A runtime that
+// caches its store across requests ends up using expired ones and gets a 401.
+const CREDENTIAL_LIFETIME_MS = 1000;
+function perCallStore() {
+  return () => {
+    const issued = Date.now();
+    const guard = (fn) => (...args) => {
+      if (Date.now() - issued > CREDENTIAL_LIFETIME_MS) {
+        const e = new Error('Netlify Blobs has generated an internal error (401 status code)');
+        e.name = 'BlobsInternalError'; e.status = 401;
+        return Promise.reject(e);
+      }
+      return fn(...args);
+    };
+    return Object.fromEntries(Object.entries(store).map(([k, fn]) => [k, guard(fn)]));
+  };
+}
+const A = createRuntime({ getStore: perCallStore() });
+const B = createRuntime({ getStore: perCallStore() });
 const base = 'https://taskboard.example';
 const jars = {};
 async function call(inst, who, method, path, body) {
@@ -72,6 +90,10 @@ test('netlify runtime: shared data, invites and no lost concurrent writes', asyn
   assert.equal(r.status, 200);
   r = await call(B, 'admin', 'GET', '/api/bootstrap');
   assert.equal(r.data.me.role, 'owner', 'session created on A is valid on B');
+  // later requests on the same warm instance must not reuse expired credentials
+  await new Promise((done) => setTimeout(done, CREDENTIAL_LIFETIME_MS + 200));
+  r = await call(A, 'admin', 'GET', '/api/bootstrap');
+  assert.equal(r.status, 200, `warm instance after credentials expired: ${JSON.stringify(r.data)}`);
   const project = r.data.projects[0];
 
   r = await call(B, 'admin', 'POST', '/api/users', { name: 'Client Carla', email: 'carla@client.com', role: 'client', project_ids: [project.id] });
