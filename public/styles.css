@@ -187,9 +187,9 @@ label.field > span { display: block; font-size: 12px; font-weight: 600; color: v
 .empty { padding: 36px; text-align: center; color: var(--muted); }
 
 /* ---------- calendar ---------- */
-.cal { display: grid; grid-template-columns: repeat(7, 1fr); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--border); gap: 1px; }
+.cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--border); gap: 1px; }
 .cal .dow { background: var(--panel-2); padding: 6px; font-size: 12px; font-weight: 600; color: var(--muted); text-align: center; }
-.cal .day { background: var(--panel); min-height: 104px; padding: 4px; display: flex; flex-direction: column; gap: 3px; }
+.cal .day { background: var(--panel); min-width: 0; min-height: 104px; padding: 4px; display: flex; flex-direction: column; gap: 3px; }
 .cal .day.other { background: var(--panel-2); }
 .cal .day.today .d { background: var(--accent); color: #fff; border-radius: 10px; padding: 0 6px; }
 .cal .d { font-size: 12px; color: var(--muted); align-self: flex-start; }
