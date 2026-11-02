@@ -244,7 +244,11 @@ function renderShell() {
     isStaff() ? commandBar() : h('div', { class: 'grow' }),
     isStaff() ? h('button', { class: 'btn primary', onclick: () => newTaskModal() }, '+ Task') : null,
   );
-  const demoBar = b.features.demo ? h('div', { class: 'demo-bar' }, 'Demo site — sample data that resets periodically. Don’t enter real client information here.') : null;
+  const demoBar = b.features.demo ? h('div', { class: 'demo-bar' },
+    window.taskboardDemoReset
+      ? 'Demo site — runs entirely in your browser; your changes are saved on this device only. Don’t enter real client information. '
+      : 'Demo site — sample data that resets periodically. Don’t enter real client information here. ',
+    window.taskboardDemoReset ? h('button', { class: 'btn ghost sm', onclick: () => { if (confirm('Reset the demo back to the sample data?')) window.taskboardDemoReset(); } }, 'Reset demo data') : null) : null;
   app.replaceChildren(h('div', { class: 'shell' }, sidebar, h('div', { class: 'main' }, demoBar, topbar, h('main', { class: 'content' }))));
 }
 

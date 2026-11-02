@@ -1,18 +1,18 @@
-# Netlify demo deployment: static front end + the API as one Netlify Function.
-# Data lives in memory and resets when the function restarts — it's a preview,
-# not a place to keep real work. See README › Deploying for permanent hosting.
+# Netlify demo: a static site only — no server or functions.
+# The TaskBoard API runs inside the visitor's browser (demo/entry.js) and saves
+# to that browser's localStorage. netlify-demo/ is pre-built and committed, so
+# Netlify has nothing to build. After changing the app, run `npm run build:demo`
+# and commit netlify-demo/.
 [build]
-  publish = "public"
-  command = "echo 'No build step needed'"
+  publish = "netlify-demo"
+  command = ""
 
-[build.environment]
-  NODE_VERSION = "22"
+[[headers]]
+  for = "/*.wasm"
+  [headers.values]
+    Content-Type = "application/wasm"
 
-[functions]
-  node_bundler = "esbuild"
-  external_node_modules = ["sql.js", "express", "multer", "nodemailer", "@anthropic-ai/sdk"]
-
-[[redirects]]
-  from = "/api/*"
-  to = "/.netlify/functions/api/:splat"
-  status = 200
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"

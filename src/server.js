@@ -28,8 +28,6 @@ export function createApp(db) {
   app.set('trust proxy', process.env.TRUST_PROXY === '1');
   app.use(express.json({ limit: '25mb' }));
   app.use(express.urlencoded({ extended: false, limit: '5mb' }));
-  // On Netlify the API is reached through /.netlify/functions/api/*; normalise to /api/*.
-  app.use((req, _res, next) => { req.url = req.url.replace(/^\/\.netlify\/functions\/api(?=\/|$)/, '/api'); next(); });
   app.use(express.static(path.join(here, '..', 'public'), { index: 'index.html' }));
 
   // ---------- auth helpers ----------
